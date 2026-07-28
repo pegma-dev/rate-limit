@@ -2,8 +2,9 @@
 
 ## Status
 
-**Stage:** implemented through Phase 2, package-name bootstrap pending
-(`0.0.0`, public API unstable, unpublished)
+**Stage:** implemented through Phase 2; the exact reviewed `0.0.0`
+package-name bootstrap is published and trusted publishing is configured. The
+first advertised `0.1.0` release is being prepared (public API unstable).
 
 **First named consumers:** Pegma Identity requires durable throttling on its
 abuse-critical authentication operations, and the Pegma support desk requires
@@ -206,7 +207,11 @@ tier-choice ergonomics judged by a real composition root.
 
 ### Phase 4 — publish
 
-First public `0.x` with the ecosystem's publishing wave.
+**In progress.** The exact reviewed `0.0.0` bootstrap artifact was published
+under `bootstrap`, and trusted publishing is configured. npm also assigned
+`latest` to `0.0.0` and rejected its removal with HTTP 400. Publishing the
+first advertised `0.1.0` release through the signed-tag OIDC workflow will
+immediately correct `latest`.
 
 ## Open questions
 
@@ -233,7 +238,6 @@ making per-refusal logging part of this hot-path contract.
    judge the composition-root API against that real consumer.
 2. Wire both tiers into the support desk: memory for public reads, durable for
    ticket creation and sender/domain throttling.
-3. Complete the audited manual `0.0.0` package-name bootstrap under the
-   non-default `bootstrap` npm tag, then configure trusted publishing.
-4. After consumer validation, use a separate version PR and the signed-tag
-   OIDC workflow for the first advertised `0.1.0` release.
+3. Review and merge the separate `0.1.0` version PR, then use the protected
+   signed-tag OIDC workflow for the first advertised release. Confirm
+   `latest: 0.1.0` and retain `bootstrap: 0.0.0` afterward.

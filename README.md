@@ -6,10 +6,12 @@ Request rate limiting for [Pegma](https://pegma.dev) components: an honest
 in-memory tier and a durable storage-backed tier for expensive operations.
 
 > [!IMPORTANT]
-> Rate Limit is in early `0.x` development. Its public API is not stable and
-> `@pegma/rate-limit` is not published. Phases 1 and 2 are implemented, but
-> the audited `0.0.0` package-name bootstrap is still pending. A separate
-> `0.1.0` pull request and release will be the first advertised version.
+> Rate Limit is in early `0.x` development. Its public API is not stable.
+> Phases 1 and 2 are implemented. The exact reviewed `0.0.0` package-name
+> bootstrap is published and trusted publishing is configured. npm also
+> assigned `latest` to `0.0.0` and rejected its removal with HTTP 400;
+> publishing `0.1.0` will immediately correct `latest` to the first advertised
+> version.
 
 ## Two tiers, no pretending
 

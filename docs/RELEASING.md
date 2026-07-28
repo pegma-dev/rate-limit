@@ -2,8 +2,8 @@
 
 No package is published merely by merging a pull request. Normal releases use
 the hardened GitHub release workflow, npm trusted publishing, and provenance.
-The one-time manual `0.0.0` ceremony below exists only because npm cannot
-configure a trusted publisher until `@pegma/rate-limit` exists.
+The completed one-time manual `0.0.0` ceremony below exists as an audit record:
+npm could not configure a trusted publisher until `@pegma/rate-limit` existed.
 
 ## Release invariants
 
@@ -21,11 +21,18 @@ artifact or another registry failure stops the ceremony.
 
 ## One-time `0.0.0` package-name bootstrap
 
-This bootstrap is pending. Perform it once after this audited bootstrap pull
-request is reviewed and merged. Do not create a GitHub release for `v0.0.0`,
-do not use `latest`, and do not run the OIDC publish workflow. The bootstrap
-artifact exists only to reserve the package name and enable trusted-publisher
-configuration.
+**Complete; do not repeat.** The exact reviewed `0.0.0` artifact was published
+under `bootstrap`, its signed annotated source tag points to the reviewed
+`origin/main` commit, and npm trusted publishing is configured for
+`pegma-dev/rate-limit`, `publish.yml`, and the `npm-publish` environment.
+
+npm also assigned the default `latest` tag to `0.0.0`. The operator attempted
+to remove it, but npm rejected the request with HTTP 400. The immutable
+bootstrap remains exact and the `bootstrap` tag remains correct; publishing
+`0.1.0` through the normal workflow will immediately move `latest` to the
+first advertised version.
+
+The steps below are retained only as the ceremony's audit and recovery record.
 
 ### 1. Prepare the reviewed bytes
 
@@ -97,13 +104,15 @@ workstation failure requires reconstructing the artifact, use the same clean
 tagged checkout and reviewed npm version, repack, and require `exact` before
 continuing. Never unpublish and reuse a version.
 
-Confirm the bootstrap tag is not the default:
+The intended post-bootstrap check was:
 
 ```sh
 npm dist-tag ls @pegma/rate-limit
 ```
 
-`bootstrap` must point to `0.0.0`; `latest` must not point to `0.0.0`.
+`bootstrap` points to `0.0.0`. npm unexpectedly also made `latest` point to
+`0.0.0` and rejected its removal with HTTP 400; do not retry destructive
+registry changes. The `0.1.0` publication corrects the default tag.
 
 ### 4. Configure trusted publishing
 
@@ -126,8 +135,7 @@ The workflow intentionally rejects `0.0.0`; its first permitted release is
 
 ## First advertised `0.1.0` release
 
-After bootstrap and consumer validation, use a separate reviewed pull request
-to:
+This separate reviewed pull request must:
 
 1. change `packages/rate-limit/package.json` from `0.0.0` to `0.1.0`;
 2. regenerate `package-lock.json` and verify its workspace entry is `0.1.0`;
@@ -153,3 +161,37 @@ main ancestry, full gate, tarball inventory, imports, and hashes. Only the
 environment-scoped publish job receives OIDC authority; it installs no
 dependencies and publishes the downloaded prepared artifact with provenance.
 Re-running is safe only when npm reports the same integrity.
+
+After publication, select the one successful `publish.yml` release run for
+the exact signed tag commit, confirm the run names that tag and commit, and
+download its uniquely named prepared artifact before checking registry
+integrity:
+
+```sh
+release_tag=v0.1.0
+release_commit="$(git rev-parse "${release_tag}^{commit}")"
+run_id="$(
+  gh run list \
+    --repo pegma-dev/rate-limit \
+    --workflow publish.yml \
+    --event release \
+    --commit "${release_commit}" \
+    --status success \
+    --limit 2 \
+    --json databaseId \
+    --jq 'if length == 1 then .[0].databaseId else error("expected exactly one successful release run") end'
+)"
+test "$(gh run view "${run_id}" --repo pegma-dev/rate-limit --json headBranch --jq .headBranch)" = "${release_tag}"
+test "$(gh run view "${run_id}" --repo pegma-dev/rate-limit --json headSha --jq .headSha)" = "${release_commit}"
+artifact_dir="$(mktemp -d)"
+gh run download "${run_id}" \
+  --repo pegma-dev/rate-limit \
+  --name "rate-limit-release-${run_id}" \
+  --dir "${artifact_dir}"
+test -f "${artifact_dir}/package-manifest.json"
+npm run release:registry:check -- -- --manifest "${artifact_dir}/package-manifest.json"
+npm dist-tag ls @pegma/rate-limit
+```
+
+The registry check must report `@pegma/rate-limit@0.1.0: exact`;
+`latest` must point to `0.1.0`, while `bootstrap` remains at `0.0.0`.
