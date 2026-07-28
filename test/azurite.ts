@@ -72,6 +72,24 @@ async function waitForStartup(
   });
 }
 
+async function stopProcess(instance: ChildProcess): Promise<void> {
+  if (instance.exitCode !== null || instance.signalCode !== null) {
+    return;
+  }
+  await new Promise<void>((resolve) => {
+    const settle = () => {
+      instance.off("error", settle);
+      instance.off("exit", settle);
+      resolve();
+    };
+    instance.once("error", settle);
+    instance.once("exit", settle);
+    if (!instance.kill()) {
+      settle();
+    }
+  });
+}
+
 export async function setup(): Promise<void> {
   const entry = join(
     process.cwd(),
@@ -105,7 +123,9 @@ export async function setup(): Promise<void> {
 }
 
 export async function teardown(): Promise<void> {
-  child?.kill();
+  if (child !== undefined) {
+    await stopProcess(child);
+  }
   child = undefined;
   if (workspace !== undefined) {
     await rm(workspace, { force: true, recursive: true });
