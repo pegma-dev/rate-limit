@@ -2,9 +2,11 @@
 
 ## Status
 
-**Stage:** implemented through Phase 2; the exact reviewed `0.0.0`
-package-name bootstrap is published and trusted publishing is configured. The
-first advertised `0.1.0` release is being prepared (public API unstable).
+**Stage:** implemented through Phase 2. The exact reviewed `0.0.0`
+package-name bootstrap remains published under `bootstrap`.
+`@pegma/rate-limit@0.1.0`, the first advertised release, is published from the
+protected signed annotated `v0.1.0` tag by the GitHub release workflow through
+npm trusted-publisher OIDC with provenance.
 
 **First named consumers:** Pegma Identity requires durable throttling on its
 abuse-critical authentication operations, and the Pegma support desk requires
