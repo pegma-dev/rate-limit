@@ -16,7 +16,9 @@ Two explicitly named application rate-limit tiers:
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
 Policy names and limiter keys must be primitive, non-blank strings. Whitespace
-is preserved; it remains part of the host-chosen opaque identity.
+is preserved; it remains part of the host-chosen opaque identity. Inputs must
+also contain well-formed Unicode so UTF-8 hashing cannot alias distinct
+unpaired UTF-16 surrogate code units.
 
 ## Memory tier
 
@@ -67,8 +69,11 @@ storage outage, malformed state, and malformed clock values fail closed with
 `retryAfter`, measured in milliseconds.
 
 Policy names and limiter keys are domain-separated and SHA-256 hashed for
-backend-safe storage identifiers. Their original values remain part of the
-stored counter record so malformed or colliding state still fails closed.
+backend-safe storage identifiers. Durable counter records store only those
+bounded hashes, never the raw policy name or key. Subject hashes are scoped to
+their policy, but they are deterministic pseudonymous identifiers, not
+anonymization: predictable inputs can still be guessed and activity remains
+linkable within a policy.
 
 The durable tier uses fixed windows. A burst across a boundary can briefly
 admit nearly twice the limit. It also puts shared-storage latency on every

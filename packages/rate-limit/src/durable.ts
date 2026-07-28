@@ -23,8 +23,8 @@ const COLLECTION_NAME = "rate-limit-windows";
 interface StoredWindow {
   readonly partition: StoredValue;
   readonly id: StoredValue;
-  readonly policyName: StoredValue;
-  readonly subjectKey: StoredValue;
+  readonly policyHash: StoredValue;
+  readonly subjectHash: StoredValue;
   readonly windowStartMs: StoredValue;
   readonly count: StoredValue;
 }
@@ -32,8 +32,8 @@ interface StoredWindow {
 interface ValidWindow {
   readonly partition: string;
   readonly id: string;
-  readonly policyName: string;
-  readonly subjectKey: string;
+  readonly policyHash: string;
+  readonly subjectHash: string;
   readonly windowStartMs: number;
   readonly count: number;
 }
@@ -51,8 +51,8 @@ const windows = defineCollection<StoredWindow>({
     decode: (record) => ({
       partition: record.partition ?? null,
       id: record.id ?? null,
-      policyName: record.policyName ?? null,
-      subjectKey: record.subjectKey ?? null,
+      policyHash: record.policyHash ?? null,
+      subjectHash: record.subjectHash ?? null,
       windowStartMs: record.windowStartMs ?? null,
       count: record.count ?? null,
     }),
@@ -88,21 +88,44 @@ async function hashOpaque(value: string): Promise<string> {
     .join("");
 }
 
-async function partitionFor(policy: RateLimitPolicy): Promise<string> {
-  return `policy-${await hashOpaque(`pegma.rate-limit.policy.v1\u0000${policy.name}`)}`;
+interface PartitionIdentity {
+  readonly partition: string;
+  readonly policyHash: string;
 }
 
-async function idFor(windowStartMs: number, key: string): Promise<string> {
-  return `${windowStartMs}-${await hashOpaque(`pegma.rate-limit.key.v1\u0000${key}`)}`;
+async function partitionFor(
+  policy: RateLimitPolicy,
+): Promise<PartitionIdentity> {
+  const policyHash = await hashOpaque(
+    `pegma.rate-limit.policy.v1\u0000${policy.name}`,
+  );
+  return { partition: `policy-${policyHash}`, policyHash };
 }
+
+async function subjectHashFor(
+  policyHash: string,
+  key: string,
+): Promise<string> {
+  return hashOpaque(
+    `pegma.rate-limit.subject.v1\u0000${policyHash}\u0000${key}`,
+  );
+}
+
+function idFor(windowStartMs: number, subjectHash: string): string {
+  return `${windowStartMs}-${subjectHash}`;
+}
+
+const SHA_256_HEX = /^[0-9a-f]{64}$/u;
 
 function validWindow(value: StoredWindow): ValidWindow | null {
   return typeof value.partition === "string" &&
-    value.partition.length > 0 &&
+    /^policy-[0-9a-f]{64}$/u.test(value.partition) &&
     typeof value.id === "string" &&
     value.id.length > 0 &&
-    typeof value.policyName === "string" &&
-    typeof value.subjectKey === "string" &&
+    typeof value.policyHash === "string" &&
+    SHA_256_HEX.test(value.policyHash) &&
+    typeof value.subjectHash === "string" &&
+    SHA_256_HEX.test(value.subjectHash) &&
     typeof value.windowStartMs === "number" &&
     Number.isSafeInteger(value.windowStartMs) &&
     typeof value.count === "number" &&
@@ -112,31 +135,30 @@ function validWindow(value: StoredWindow): ValidWindow | null {
     : null;
 }
 
-async function sweepIdentity(
+function sweepIdentity(
   value: StoredWindow,
-  policy: RateLimitPolicy,
-  partition: string,
-): Promise<WindowIdentity | null> {
+  expected: PartitionIdentity,
+): WindowIdentity | null {
   if (
     typeof value.partition !== "string" ||
-    value.partition !== partition ||
+    value.partition !== expected.partition ||
     typeof value.id !== "string" ||
     value.id.length === 0 ||
-    typeof value.policyName !== "string" ||
-    value.policyName !== policy.name ||
-    typeof value.subjectKey !== "string" ||
-    value.subjectKey.trim().length === 0 ||
+    typeof value.policyHash !== "string" ||
+    value.policyHash !== expected.policyHash ||
+    typeof value.subjectHash !== "string" ||
+    !SHA_256_HEX.test(value.subjectHash) ||
     typeof value.windowStartMs !== "number" ||
     !Number.isSafeInteger(value.windowStartMs) ||
-    value.id !== (await idFor(value.windowStartMs, value.subjectKey))
+    value.id !== idFor(value.windowStartMs, value.subjectHash)
   ) {
     return null;
   }
   return {
     partition: value.partition,
     id: value.id,
-    policyName: value.policyName,
-    subjectKey: value.subjectKey,
+    policyHash: value.policyHash,
+    subjectHash: value.subjectHash,
     windowStartMs: value.windowStartMs,
   };
 }
@@ -165,7 +187,15 @@ export function createDurableLimiter(
   const clock = options.clock ?? systemClock;
   const maxAttempts = assertMaxAttempts(options.maxAttempts ?? 3);
   const collection = store.collection(windows);
-  const partitionPromise = partitionFor(policy);
+  let partitionPromise: Promise<PartitionIdentity> | undefined;
+
+  function getPartition(): Promise<PartitionIdentity> {
+    // Start hashing only inside allow/sweep, where fail-closed handling
+    // immediately awaits the promise. Eager hashing can leave a rejected
+    // digest promise unhandled before the limiter is first used.
+    partitionPromise ??= partitionFor(policy);
+    return partitionPromise;
+  }
 
   return {
     async allow(key: string, at?: IsoTimestamp): Promise<RateLimitDecision> {
@@ -179,8 +209,9 @@ export function createDurableLimiter(
       let deciderAllowed = false;
 
       try {
-        const partition = await partitionPromise;
-        const id = await idFor(windowStartMs, key);
+        const { partition, policyHash } = await getPartition();
+        const subjectHash = await subjectHashFor(policyHash, key);
+        const id = idFor(windowStartMs, subjectHash);
         const result = await collection.update(
           { partition, id },
           (current) => {
@@ -191,8 +222,8 @@ export function createDurableLimiter(
                 value: {
                   partition,
                   id,
-                  policyName: policy.name,
-                  subjectKey: key,
+                  policyHash,
+                  subjectHash,
                   windowStartMs,
                   count: 1,
                 },
@@ -204,8 +235,8 @@ export function createDurableLimiter(
               valid === null ||
               valid.partition !== partition ||
               valid.id !== id ||
-              valid.policyName !== policy.name ||
-              valid.subjectKey !== key ||
+              valid.policyHash !== policyHash ||
+              valid.subjectHash !== subjectHash ||
               valid.windowStartMs !== windowStartMs ||
               valid.count >= policy.limit
             ) {
@@ -241,23 +272,18 @@ export function createDurableLimiter(
         return { scanned: 0, deleted: 0 };
       }
 
-      let partition: string;
+      let expected: PartitionIdentity;
       let rows;
       try {
-        partition = await partitionPromise;
-        rows = await collection.listVersioned(partition);
+        expected = await getPartition();
+        rows = await collection.listVersioned(expected.partition);
       } catch {
         return { scanned: 0, deleted: 0 };
       }
 
       let deleted = 0;
       for (const row of rows) {
-        let identity: WindowIdentity | null;
-        try {
-          identity = await sweepIdentity(row.value, policy, partition);
-        } catch {
-          identity = null;
-        }
+        const identity = sweepIdentity(row.value, expected);
         if (identity === null) {
           // CollectionStore.listVersioned does not expose the actual row key.
           // Reconstructing one from malformed identity fields could pair this

@@ -135,12 +135,48 @@ describe("createMemoryLimiter", () => {
     ).resolves.toEqual({ allowed: true });
   });
 
+  it.each([0xd800, 0xdbff, 0xdc00, 0xdfff])(
+    "rejects an unpaired surrogate policy code unit %#",
+    (codeUnit) => {
+      expect(() =>
+        defineRateLimitPolicy({
+          name: `policy-${String.fromCharCode(codeUnit)}`,
+          limit: 1,
+          windowMs: 1_000,
+        }),
+      ).toThrow("well-formed Unicode");
+    },
+  );
+
+  it("accepts paired surrogate policy names and keys", async () => {
+    const limiter = createMemoryLimiter({
+      name: "policy-\u{1f600}",
+      limit: 1,
+      windowMs: 1_000,
+    });
+
+    await expect(
+      limiter.allow("key-\u{1f680}", "2026-01-01T00:00:00.000Z"),
+    ).resolves.toEqual({ allowed: true });
+  });
+
   it.each(["", "   ", null, new String("boxed")])(
     "rejects an invalid limiter key %#",
     async (key) => {
       await expect(
         createMemoryLimiter(policy).allow(key as unknown as string),
       ).rejects.toThrow("key");
+    },
+  );
+
+  it.each([0xd800, 0xdbff, 0xdc00, 0xdfff])(
+    "rejects an unpaired surrogate limiter key code unit %#",
+    async (codeUnit) => {
+      await expect(
+        createMemoryLimiter(policy).allow(
+          `key-${String.fromCharCode(codeUnit)}`,
+        ),
+      ).rejects.toThrow("well-formed Unicode");
     },
   );
 });

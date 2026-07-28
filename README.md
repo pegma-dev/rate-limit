@@ -33,6 +33,12 @@ records, and malformed time all fail closed with a millisecond
 
 Policy names and limiter keys are host-owned opaque strings, but they must be
 primitive and non-blank. Whitespace is preserved once that validation passes.
+Ill-formed Unicode is rejected so UTF-8 hashing remains injective before the
+cryptographic digest.
+The durable tier stores only domain-separated SHA-256 hashes of those values,
+not the raw inputs, keeping entity sizes bounded. These deterministic hashes
+are pseudonymous, not anonymous: predictable inputs can still be guessed, and
+the same key remains linkable within one policy.
 
 Fixed windows have a documented edge: a burst crossing a boundary can briefly
 admit nearly twice the configured limit. This package does not claim to be

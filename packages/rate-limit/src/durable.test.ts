@@ -12,7 +12,7 @@ import {
   type UpdateDecider,
   type UpdateOptions,
 } from "@pegma/storage-core";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { TABLE_PORT } from "../../../test/azurite.js";
 import { createDurableLimiter } from "./durable.js";
@@ -141,6 +141,112 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
 });
 
 describe("durable failure and contention behavior", () => {
+  it("starts hashing lazily and handles digest rejection before it can become unhandled", async () => {
+    let digestCalls = 0;
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    vi.stubGlobal("crypto", {
+      subtle: {
+        async digest() {
+          digestCalls += 1;
+          throw new Error("digest unavailable");
+        },
+      },
+    });
+
+    try {
+      const limiter = createDurableLimiter(policy, createMemoryStore());
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(digestCalls).toBe(0);
+      expect(unhandled).toEqual([]);
+
+      await expect(limiter.allow("alice", start)).resolves.toEqual({
+        allowed: false,
+        retryAfter: 60_000,
+      });
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(digestCalls).toBe(1);
+      expect(unhandled).toEqual([]);
+    } finally {
+      vi.unstubAllGlobals();
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  it("stores only bounded domain-separated hashes, never raw policy names or keys", async () => {
+    let stored: unknown;
+    const store: Store = {
+      collection<T>(): CollectionStore<T> {
+        return {
+          async update(_key: EntityKey, decide: UpdateDecider<T>) {
+            const decision = await decide(null);
+            if (decision.action !== "write") {
+              throw new Error("expected a counter write");
+            }
+            stored = decision.value;
+            return { written: true, value: decision.value, attempts: 1 };
+          },
+        } as unknown as CollectionStore<T>;
+      },
+    };
+    const rawPolicy = `private-policy-${"p".repeat(2_000)}`;
+    const rawKey = `person@example.test-${"k".repeat(2_000)}`;
+    const limiter = createDurableLimiter(
+      { name: rawPolicy, limit: 1, windowMs: 60_000 },
+      store,
+    );
+
+    await expect(limiter.allow(rawKey, start)).resolves.toEqual({
+      allowed: true,
+    });
+    const serialized = JSON.stringify(stored);
+    expect(serialized).not.toContain(rawPolicy);
+    expect(serialized).not.toContain(rawKey);
+    expect(serialized.length).toBeLessThan(400);
+    expect(stored).toMatchObject({
+      policyHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      subjectHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
+      partition: expect.stringMatching(/^policy-[0-9a-f]{64}$/u),
+      id: expect.stringMatching(/^\d{13}-[0-9a-f]{64}$/u),
+      count: 1,
+    });
+    expect(stored).not.toHaveProperty("policyName");
+    expect(stored).not.toHaveProperty("subjectKey");
+  });
+
+  it("scopes a subject hash to its policy", async () => {
+    const stored: Array<Record<string, unknown>> = [];
+    const store: Store = {
+      collection<T>(): CollectionStore<T> {
+        return {
+          async update(_key: EntityKey, decide: UpdateDecider<T>) {
+            const decision = await decide(null);
+            if (decision.action !== "write") {
+              throw new Error("expected a counter write");
+            }
+            stored.push(decision.value as Record<string, unknown>);
+            return { written: true, value: decision.value, attempts: 1 };
+          },
+        } as unknown as CollectionStore<T>;
+      },
+    };
+
+    await createDurableLimiter(
+      { name: "policy-one", limit: 1, windowMs: 60_000 },
+      store,
+    ).allow("same-subject", start);
+    await createDurableLimiter(
+      { name: "policy-two", limit: 1, windowMs: 60_000 },
+      store,
+    ).allow("same-subject", start);
+
+    expect(stored).toHaveLength(2);
+    expect(stored[0]?.subjectHash).not.toBe(stored[1]?.subjectHash);
+  });
+
   it("holds the configured boundary under real concurrent Azurite writes", async () => {
     const limit = 12;
     const limiter = createDurableLimiter(
@@ -272,8 +378,8 @@ describe("durable failure and contention behavior", () => {
             const malformed = {
               partition: "wrong",
               id: "wrong",
-              policyName: "login",
-              subjectKey: "alice",
+              policyHash: "bad-policy-hash",
+              subjectHash: "bad-subject-hash",
               windowStartMs: "bad",
               count: -1,
             } as T;
@@ -351,8 +457,8 @@ describe("durable failure and contention behavior", () => {
                 value: {
                   partition: "policy-malformed",
                   id: "bad-row",
-                  policyName: null,
-                  subjectKey: null,
+                  policyHash: null,
+                  subjectHash: null,
                   windowStartMs: "not-a-number",
                   count: -1,
                 } as T,

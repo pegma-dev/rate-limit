@@ -77,7 +77,14 @@ hidden — is the consistency claim:
 Keys are host-chosen opaque strings (an IP, a principal, a sender domain).
 Policies are named so a host's limiter wiring reads as configuration
 (`login: 10/5min strict`, `api: 60/5min approximate`) and so the durable
-tier's records partition by policy name.
+tier's records partition by a domain-separated SHA-256 policy hash. Durable
+records likewise carry only the bounded policy and key hashes, never raw
+host-chosen values; this avoids backend property limits without changing the
+host-facing vocabulary. Subject hashes are scoped to their policy. They remain
+deterministic pseudonymous identifiers—not anonymization—so predictable
+inputs can be guessed and activity remains linkable within one policy. Policy
+names and keys must contain well-formed Unicode, preventing the UTF-8 encoder
+from aliasing distinct unpaired UTF-16 surrogate code units before hashing.
 
 ## Design decisions
 
