@@ -9,9 +9,10 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> `0.1.0` is the first advertised release and is published under `latest`
-> through trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
-> package-name bootstrap remains isolated under the `bootstrap` dist-tag.
+> `0.1.0` is the first advertised release, published through
+> trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
+> package-name bootstrap remains isolated under the `bootstrap` dist-tag and
+> is never advertised as the current supported release.
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.

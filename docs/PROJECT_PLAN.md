@@ -221,8 +221,8 @@ deployment, and sender/domain wiring remain pending.
 
 **Complete.** The exact reviewed `0.0.0` bootstrap artifact remains under
 `bootstrap`. The protected signed annotated `v0.1.0` release published the
-first advertised package through trusted-publisher OIDC with provenance, and
-`latest` now resolves to `0.1.0`.
+first advertised package through trusted-publisher OIDC with provenance,
+moving the default release line permanently beyond the bootstrap artifact.
 
 ## Open questions
 

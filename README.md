@@ -7,10 +7,10 @@ in-memory tier and a durable storage-backed tier for expensive operations.
 
 > [!IMPORTANT]
 > Rate Limit is in early `0.x` development. Its public API is not stable.
-> Phases 1 and 2 are implemented. `@pegma/rate-limit@0.1.0` is the first
-> advertised release, published from the protected signed `v0.1.0` tag through
-> trusted-publisher OIDC with provenance. pegma.dev composes the durable tier
-> in its production Identity worker.
+> `@pegma/rate-limit@0.1.0` is the first advertised release, published from
+> the protected signed `v0.1.0` tag through trusted-publisher OIDC with
+> provenance. pegma.dev composes the durable tier in its production Identity
+> worker.
 
 ## Two tiers, no pretending
 
