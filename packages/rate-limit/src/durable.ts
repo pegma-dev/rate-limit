@@ -78,20 +78,22 @@ export interface DurableRateLimiter extends RateLimiter {
   sweep(now?: IsoTimestamp): Promise<SweepResult>;
 }
 
-function encodeOpaque(value: string): string {
-  let encoded = "";
-  for (let index = 0; index < value.length; index += 1) {
-    encoded += value.charCodeAt(index).toString(16).padStart(4, "0");
-  }
-  return encoded;
+async function hashOpaque(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(value),
+  );
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
-function partitionFor(policy: RateLimitPolicy): string {
-  return `policy-${encodeOpaque(policy.name)}`;
+async function partitionFor(policy: RateLimitPolicy): Promise<string> {
+  return `policy-${await hashOpaque(`pegma.rate-limit.policy.v1\u0000${policy.name}`)}`;
 }
 
-function idFor(windowStartMs: number, key: string): string {
-  return `${windowStartMs}-${encodeOpaque(key)}`;
+async function idFor(windowStartMs: number, key: string): Promise<string> {
+  return `${windowStartMs}-${await hashOpaque(`pegma.rate-limit.key.v1\u0000${key}`)}`;
 }
 
 function validWindow(value: StoredWindow): ValidWindow | null {
@@ -110,11 +112,11 @@ function validWindow(value: StoredWindow): ValidWindow | null {
     : null;
 }
 
-function sweepIdentity(
+async function sweepIdentity(
   value: StoredWindow,
   policy: RateLimitPolicy,
   partition: string,
-): WindowIdentity | null {
+): Promise<WindowIdentity | null> {
   if (
     typeof value.partition !== "string" ||
     value.partition !== partition ||
@@ -126,7 +128,7 @@ function sweepIdentity(
     value.subjectKey.trim().length === 0 ||
     typeof value.windowStartMs !== "number" ||
     !Number.isSafeInteger(value.windowStartMs) ||
-    value.id !== idFor(value.windowStartMs, value.subjectKey)
+    value.id !== (await idFor(value.windowStartMs, value.subjectKey))
   ) {
     return null;
   }
@@ -163,7 +165,7 @@ export function createDurableLimiter(
   const clock = options.clock ?? systemClock;
   const maxAttempts = assertMaxAttempts(options.maxAttempts ?? 3);
   const collection = store.collection(windows);
-  const partition = partitionFor(policy);
+  const partitionPromise = partitionFor(policy);
 
   return {
     async allow(key: string, at?: IsoTimestamp): Promise<RateLimitDecision> {
@@ -174,10 +176,11 @@ export function createDurableLimiter(
       }
       const windowStartMs = Math.floor(now / policy.windowMs) * policy.windowMs;
       const windowEndsAt = windowStartMs + policy.windowMs;
-      const id = idFor(windowStartMs, key);
       let deciderAllowed = false;
 
       try {
+        const partition = await partitionPromise;
+        const id = await idFor(windowStartMs, key);
         const result = await collection.update(
           { partition, id },
           (current) => {
@@ -238,8 +241,10 @@ export function createDurableLimiter(
         return { scanned: 0, deleted: 0 };
       }
 
+      let partition: string;
       let rows;
       try {
+        partition = await partitionPromise;
         rows = await collection.listVersioned(partition);
       } catch {
         return { scanned: 0, deleted: 0 };
@@ -247,7 +252,12 @@ export function createDurableLimiter(
 
       let deleted = 0;
       for (const row of rows) {
-        const identity = sweepIdentity(row.value, policy, partition);
+        let identity: WindowIdentity | null;
+        try {
+          identity = await sweepIdentity(row.value, policy, partition);
+        } catch {
+          identity = null;
+        }
         if (identity === null) {
           // CollectionStore.listVersioned does not expose the actual row key.
           // Reconstructing one from malformed identity fields could pair this

@@ -108,6 +108,23 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
     });
   });
 
+  it("hashes long opaque policy names and keys into backend-safe identifiers", async () => {
+    const limiter = createDurableLimiter(
+      {
+        name: `long-policy-${"p".repeat(2_000)}`,
+        limit: 1,
+        windowMs: 60_000,
+      },
+      makeStore(),
+    );
+
+    await expect(
+      limiter.allow(`long-key-${"k".repeat(2_000)}`, start),
+    ).resolves.toEqual({
+      allowed: true,
+    });
+  });
+
   it("sweeps stale windows with version-conditional deletes", async () => {
     const limiter = createDurableLimiter(policy, makeStore());
     await limiter.allow("old", start);

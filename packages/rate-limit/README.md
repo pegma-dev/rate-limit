@@ -66,6 +66,10 @@ count reaches the limit, checks refuse without writing. Contention exhaustion,
 storage outage, malformed state, and malformed clock values fail closed with
 `retryAfter`, measured in milliseconds.
 
+Policy names and limiter keys are domain-separated and SHA-256 hashed for
+backend-safe storage identifiers. Their original values remain part of the
+stored counter record so malformed or colliding state still fails closed.
+
 The durable tier uses fixed windows. A burst across a boundary can briefly
 admit nearly twice the limit. It also puts shared-storage latency on every
 allowed check; do not use it for hot, cheap endpoints.
