@@ -56,6 +56,18 @@ describe("createMemoryLimiter", () => {
     });
   });
 
+  it.each(["0", "01/02/2026", "2026-02-30T00:00:00.000Z"])(
+    "fails closed for a parseable noncanonical timestamp %#",
+    async (timestamp) => {
+      await expect(
+        createMemoryLimiter(policy).allow("client", timestamp),
+      ).resolves.toEqual({
+        allowed: false,
+        retryAfter: 1_000,
+      });
+    },
+  );
+
   it("fails closed when its clock throws", async () => {
     const limiter = createMemoryLimiter(policy, {
       clock: {

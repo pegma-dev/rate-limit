@@ -224,6 +224,28 @@ describe("durable failure and contention behavior", () => {
     expect(updateCalled).toBe(false);
   });
 
+  it("fails closed before storage access for a parseable noncanonical timestamp", async () => {
+    let updateCalled = false;
+    const store: Store = {
+      collection<T>(): CollectionStore<T> {
+        return {
+          async update() {
+            updateCalled = true;
+            throw new Error("should not be reached");
+          },
+        } as unknown as CollectionStore<T>;
+      },
+    };
+
+    await expect(
+      createDurableLimiter(policy, store).allow("alice", "01/02/2026"),
+    ).resolves.toEqual({
+      allowed: false,
+      retryAfter: 60_000,
+    });
+    expect(updateCalled).toBe(false);
+  });
+
   it("fails closed without rewriting a malformed current record", async () => {
     let decisionAction: string | undefined;
     const store: Store = {

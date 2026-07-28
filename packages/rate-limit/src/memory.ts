@@ -29,6 +29,7 @@ export function createMemoryLimiter(
   const policy = defineRateLimitPolicy(inputPolicy);
   const clock = options.clock ?? systemClock;
   const hits = new Map<string, number[]>();
+  let nextPruneAt = Number.NEGATIVE_INFINITY;
 
   function liveEntries(entries: readonly number[], cutoff: number): number[] {
     return entries.filter((at) => at > cutoff);
@@ -56,7 +57,6 @@ export function createMemoryLimiter(
       const cutoff = now - policy.windowMs;
       const entries = liveEntries(hits.get(key) ?? [], cutoff);
       if (entries.length >= policy.limit) {
-        hits.set(key, entries);
         return {
           allowed: false,
           retryAfter: retryAfter((entries[0] as number) + policy.windowMs, now),
@@ -65,8 +65,9 @@ export function createMemoryLimiter(
 
       entries.push(now);
       hits.set(key, entries);
-      if (hits.size > PRUNE_THRESHOLD) {
+      if (hits.size > PRUNE_THRESHOLD && now >= nextPruneAt) {
         prune(cutoff);
+        nextPruneAt = now + policy.windowMs;
       }
       return { allowed: true };
     },

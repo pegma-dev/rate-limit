@@ -72,7 +72,10 @@ export function timeInMilliseconds(
       return null;
     }
     const milliseconds = Date.parse(timestamp);
-    return Number.isFinite(milliseconds) ? milliseconds : null;
+    return Number.isFinite(milliseconds) &&
+      new Date(milliseconds).toISOString() === timestamp
+      ? milliseconds
+      : null;
   } catch {
     return null;
   }
