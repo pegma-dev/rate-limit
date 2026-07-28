@@ -2,16 +2,21 @@
 
 ## Status
 
-**Stage:** implemented through Phase 2. The exact reviewed `0.0.0`
-package-name bootstrap remains published under `bootstrap`.
-`@pegma/rate-limit@0.1.0`, the first advertised release, is published from the
+**Stage:** Phases 1, 2, and 4 are complete; Phase 3 has its first production
+consumer. `@pegma/rate-limit@0.1.0` is published, and pegma.dev composes the
+durable tier for its Identity surface. The public API remains unstable.
+
+The exact reviewed `0.0.0` package-name bootstrap remains published under
+`bootstrap`. The first advertised `0.1.0` release was published from the
 protected signed annotated `v0.1.0` tag by the GitHub release workflow through
 npm trusted-publisher OIDC with provenance.
 
 **First named consumers:** Pegma Identity requires durable throttling on its
 abuse-critical authentication operations, and the Pegma support desk requires
 "rate and size limits" plus sender and domain throttling. Identity's
-prerequisite build triggered Phases 1–2. Neither consumer is wired yet.
+prerequisite build triggered Phases 1–2. pegma.dev now composes the durable
+tier around its production Identity surface. Support Desk exposes rate
+limiting as a host boundary but has no durable deployment yet.
 
 **Reference implementation:** the in-memory sliding-window limiter in
 RetireGolden's account API (`api/src/lib/http.js`), documented in that
@@ -199,7 +204,7 @@ memory storage and real Azurite, including concurrent boundary enforcement,
 read-only over-limit refusal, bounded retries, and versioned stale-window
 sweeps.
 
-### Phase 3 — first consumer
+### Phase 3 — first consumers
 
 The support desk wires both tiers: approximate on its public read surface,
 durable on ticket creation and sender/domain throttling (its inbound-abuse
@@ -207,13 +212,17 @@ requirements). RetireGolden's account API may swap its `http.js` limiter for
 the memory tier in the same season — a nicety, not a driver. Exit: the
 tier-choice ergonomics judged by a real composition root.
 
+**In progress.** pegma.dev is the first production composition: its Identity
+Worker uses durable policies for abuse-critical operations. That consumer
+required no limiter API expansion. Support Desk's memory-tier, durable
+deployment, and sender/domain wiring remain pending.
+
 ### Phase 4 — publish
 
-**In progress.** The exact reviewed `0.0.0` bootstrap artifact was published
-under `bootstrap`, and trusted publishing is configured. npm also assigned
-`latest` to `0.0.0` and rejected its removal with HTTP 400. Publishing the
-first advertised `0.1.0` release through the signed-tag OIDC workflow will
-immediately correct `latest`.
+**Complete.** The exact reviewed `0.0.0` bootstrap artifact remains under
+`bootstrap`. The protected signed annotated `v0.1.0` release published the
+first advertised package through trusted-publisher OIDC with provenance,
+moving the default release line permanently beyond the bootstrap artifact.
 
 ## Open questions
 
@@ -236,10 +245,9 @@ making per-refusal logging part of this hot-path contract.
 
 ## Near-term backlog
 
-1. Wire the durable tier into Pegma Identity's abuse-critical operations and
-   judge the composition-root API against that real consumer.
-2. Wire both tiers into the support desk: memory for public reads, durable for
+1. Observe pegma.dev's production Identity limits and record any contract
+   friction before expanding the API.
+2. Wire both tiers into Support Desk: memory for public reads, durable for
    ticket creation and sender/domain throttling.
-3. Review and merge the separate `0.1.0` version PR, then use the protected
-   signed-tag OIDC workflow for the first advertised release. Confirm
-   `latest: 0.1.0` and retain `bootstrap: 0.0.0` afterward.
+3. Cut a later `0.x` release only when consumer feedback justifies a contract
+   change; retain `bootstrap: 0.0.0` as immutable release history.

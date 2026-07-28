@@ -9,10 +9,10 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> The exact reviewed `0.0.0` package-name bootstrap is published and trusted
-> publishing is configured. npm also assigned `latest` to that bootstrap
-> version and rejected its removal with HTTP 400. This `0.1.0` package is the
-> first advertised release and will immediately correct `latest`.
+> `0.1.0` is the first advertised release, published through
+> trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
+> package-name bootstrap remains isolated under the `bootstrap` dist-tag and
+> is never advertised as the current supported release.
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
