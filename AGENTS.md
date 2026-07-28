@@ -7,10 +7,10 @@ Read this before changing anything. It is short on purpose.
 Rate Limit is the request-limiting component of **Pegma**, a family of
 MIT-licensed packages a host application composes. Shared contracts live in
 `@pegma/spine`; persistence in `@pegma/storage-core`. They publish under the
-`@pegma` scope, one repository per component. This repository is at its
-audited `0.0.0` package-name bootstrap stage and remains unadvertised until a
-real consumer validates its composition-root wiring. The shared port and both
-named tiers are implemented through Phase 2.
+`@pegma` scope, one repository per component. The exact reviewed `0.0.0`
+package-name bootstrap is published and trusted publishing is configured.
+This repository is preparing its first advertised `0.1.0` release; the shared
+port and both named tiers are implemented through Phase 2.
 
 The governing principle, which every rule below follows from:
 

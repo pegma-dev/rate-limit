@@ -9,9 +9,10 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> This source package is at the one-time `0.0.0` package-name bootstrap stage.
-> It is not an advertised release. A separate `0.1.0` release follows
-> bootstrap and consumer validation.
+> The exact reviewed `0.0.0` package-name bootstrap is published and trusted
+> publishing is configured. npm also assigned `latest` to that bootstrap
+> version and rejected its removal with HTTP 400. This `0.1.0` package is the
+> first advertised release and will immediately correct `latest`.
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
