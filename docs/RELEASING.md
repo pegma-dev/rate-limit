@@ -162,10 +162,34 @@ environment-scoped publish job receives OIDC authority; it installs no
 dependencies and publishes the downloaded prepared artifact with provenance.
 Re-running is safe only when npm reports the same integrity.
 
-After publication, verify the prepared artifact and tags:
+After publication, select the one successful `publish.yml` release run for
+the exact signed tag commit, confirm the run names that tag and commit, and
+download its uniquely named prepared artifact before checking registry
+integrity:
 
 ```sh
-npm run release:registry:check -- -- --manifest .release/package-manifest.json
+release_tag=v0.1.0
+release_commit="$(git rev-parse "${release_tag}^{commit}")"
+run_id="$(
+  gh run list \
+    --repo pegma-dev/rate-limit \
+    --workflow publish.yml \
+    --event release \
+    --commit "${release_commit}" \
+    --status success \
+    --limit 2 \
+    --json databaseId \
+    --jq 'if length == 1 then .[0].databaseId else error("expected exactly one successful release run") end'
+)"
+test "$(gh run view "${run_id}" --repo pegma-dev/rate-limit --json headBranch --jq .headBranch)" = "${release_tag}"
+test "$(gh run view "${run_id}" --repo pegma-dev/rate-limit --json headSha --jq .headSha)" = "${release_commit}"
+artifact_dir="$(mktemp -d)"
+gh run download "${run_id}" \
+  --repo pegma-dev/rate-limit \
+  --name "rate-limit-release-${run_id}" \
+  --dir "${artifact_dir}"
+test -f "${artifact_dir}/package-manifest.json"
+npm run release:registry:check -- -- --manifest "${artifact_dir}/package-manifest.json"
 npm dist-tag ls @pegma/rate-limit
 ```
 
