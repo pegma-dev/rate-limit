@@ -2,14 +2,13 @@
 
 ## Status
 
-**Stage:** planning, deliberately dormant until its first consumer
-(`0.x`, public API unstable, unpublished)
+**Stage:** implemented through Phase 2, package-name bootstrap pending
+(`0.0.0`, public API unstable, unpublished)
 
-**First named consumer:** the Pegma support desk, whose architecture requires
-"rate and size limits" and "sender and domain throttling" on its public
-endpoints and inbound mailbox. Its Phase 2 (customer ticket API) and Phases
-6–7 (mail) are the trigger for implementation here; this plan exists so the
-design is settled before that pull arrives.
+**First named consumers:** Pegma Identity requires durable throttling on its
+abuse-critical authentication operations, and the Pegma support desk requires
+"rate and size limits" plus sender and domain throttling. Identity's
+prerequisite build triggered Phases 1–2. Neither consumer is wired yet.
 
 **Reference implementation:** the in-memory sliding-window limiter in
 RetireGolden's account API (`api/src/lib/http.js`), documented in that
@@ -78,7 +77,14 @@ hidden — is the consistency claim:
 Keys are host-chosen opaque strings (an IP, a principal, a sender domain).
 Policies are named so a host's limiter wiring reads as configuration
 (`login: 10/5min strict`, `api: 60/5min approximate`) and so the durable
-tier's records partition by policy name.
+tier's records partition by a domain-separated SHA-256 policy hash. Durable
+records likewise carry only the bounded policy and key hashes, never raw
+host-chosen values; this avoids backend property limits without changing the
+host-facing vocabulary. Subject hashes are scoped to their policy. They remain
+deterministic pseudonymous identifiers—not anonymization—so predictable
+inputs can be guessed and activity remains linkable within one policy. Policy
+names and keys must contain well-formed Unicode, preventing the UTF-8 encoder
+from aliasing distinct unpaired UTF-16 surrogate code units before hashing.
 
 ## Design decisions
 
@@ -120,14 +126,17 @@ fail-open reachable by configuration.
 ### Time is injected
 
 Both tiers take a spine `Clock`; window arithmetic is pure and testable. The
-durable tier never trusts a stored timestamp it did not compute — malformed
-records count as expired and are swept.
+durable tier never trusts a stored timestamp it did not compute. Malformed
+records fail closed and are retained by sweeps. Storage-core listings do not
+return actual row keys, so pairing any malformed row's version with a key
+reconstructed from its payload could delete another row. Sweeps remove only
+structurally valid, expired records.
 
 ### This is an application limiter, not DDoS protection
 
 Volumetric attacks are settled at the CDN/edge before requests cost compute.
 This component assumes the request has already paid to arrive and decides
-whether the *application* will do work for it. Stated as a non-goal because
+whether the _application_ will do work for it. Stated as a non-goal because
 adopters conflate the two, and the conflation is dangerous in the flattering
 direction.
 
@@ -172,11 +181,20 @@ The shared port, named policies, and `createMemoryLimiter` extracted from
 the reference implementation. Small on purpose; exists so consumers code
 against the port from day one.
 
+**Complete.** The memory-only export is storage-free, the tier is named at the
+composition root, and sliding-window and retry-after behavior are covered.
+
 ### Phase 2 — durable tier
 
 `createDurableLimiter` with the decider-mediated counter, read-only
 over-limit refusal, bounded fail-closed retries, and the sweep. Contention
 tests against real Azurite are the exit bar.
+
+**Complete.** The fixed-window implementation fails closed for storage,
+contention, malformed-record, and malformed-time failures. The suite exercises
+memory storage and real Azurite, including concurrent boundary enforcement,
+read-only over-limit refusal, bounded retries, and versioned stale-window
+sweeps.
 
 ### Phase 3 — first consumer
 
@@ -192,7 +210,7 @@ First public `0.x` with the ecosystem's publishing wave.
 
 ## Open questions
 
-**Sender/domain throttling shape.** Support desk throttles *senders* — keys
+**Sender/domain throttling shape.** Support desk throttles _senders_ — keys
 with natural hierarchy (address within domain). Is that two policies over
 two keys (lean: yes, simple) or one hierarchical policy (probably
 over-design)? Decide against the real Phase 3 requirement.
@@ -205,11 +223,17 @@ the two shipped tiers genuinely bracket a gap.
 **Refusal observability.** Refusals are operationally interesting (attack
 onset). A spine `Logger` line per refusal could itself become hot-path load
 under attack. Lean: counters surfaced periodically, not per-event logging.
-Decide in Phase 2.
+**Resolved in Phase 2:** the limiter does not log. The decision is returned to
+the host, which can aggregate observations at the composition boundary without
+making per-refusal logging part of this hot-path contract.
 
 ## Near-term backlog
 
-1. Nothing until the support desk's Phase 2 approaches — this component is
-   deliberately dormant; the plan above is the deliverable for now.
-2. Then: scaffolding to the ecosystem standard (SHA-pinned CI, publish.yml),
-   Phase 1, and the first consumer wiring.
+1. Wire the durable tier into Pegma Identity's abuse-critical operations and
+   judge the composition-root API against that real consumer.
+2. Wire both tiers into the support desk: memory for public reads, durable for
+   ticket creation and sender/domain throttling.
+3. Complete the audited manual `0.0.0` package-name bootstrap under the
+   non-default `bootstrap` npm tag, then configure trusted publishing.
+4. After consumer validation, use a separate version PR and the signed-tag
+   OIDC workflow for the first advertised `0.1.0` release.

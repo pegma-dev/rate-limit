@@ -6,49 +6,73 @@ Request rate limiting for [Pegma](https://pegma.dev) components: an honest
 in-memory tier and a durable storage-backed tier for expensive operations.
 
 > [!IMPORTANT]
-> Rate Limit is in early `0.x` development. Its public API is not stable, its
-> packages are not published, and it is not ready for production use. It is
-> deliberately dormant until its first consumer (the Pegma support desk)
-> needs it — see the plan.
+> Rate Limit is in early `0.x` development. Its public API is not stable and
+> `@pegma/rate-limit` is not published. Phases 1 and 2 are implemented, but
+> the audited `0.0.0` package-name bootstrap is still pending. A separate
+> `0.1.0` pull request and release will be the first advertised version.
 
 ## Two tiers, no pretending
 
-The most damaging thing a rate limiter can do is misrepresent its
-consistency. This component makes the choice explicit at the composition
-root, and neither tier pretends to be the other:
+The most damaging thing a rate limiter can do is misrepresent its consistency.
+This component makes the choice explicit at the composition root:
 
-- **Memory** — a sliding window per process, zero I/O. Per-instance and
-  therefore *approximate under scale-out* (N instances ≈ N× the limit),
-  which is fine for what it is: abuse dampening on cheap endpoints. It says
-  so in its name and its docs.
-- **Durable** — a fixed-window counter over
-  [`@pegma/storage-core`](https://github.com/pegma-dev/storage-core), one
-  storage round trip per check. For low-rate, expensive, abuse-critical
-  operations — login attempts, checkout creation, sender throttling — where
-  the limit must actually hold across instances and the guarded work dwarfs
-  the check.
+- **`createMemoryLimiter`** is a sliding window per process with zero I/O. It
+  is approximate under scale-out: N instances can admit about N times the
+  configured limit. It is for abuse dampening where the host accepts that
+  property.
+- **`createDurableLimiter`** is a fixed-window counter over
+  [`@pegma/storage-core`](https://github.com/pegma-dev/storage-core). It pays
+  shared-storage latency on each allowed check and is for low-rate, expensive
+  or abuse-critical work where the boundary must hold across instances.
 
-The durable tier is engineered for the ugly moment it exists for: once a key
-is over its limit, refusals are **read-only** (the system under heaviest
-attack does the least work), retries are bounded, and every failure mode —
-contention exhaustion, storage outage — **fails closed**. There is no
-configuration that makes it fail open; a host wanting that owns the decision
-in its own code.
+The durable tier uses storage-core update deciders. Once a freshly read count
+reaches its limit, the decider keeps the record unchanged, so repeated
+refusals are read-only. Contention exhaustion, storage outage, malformed
+records, and malformed time all fail closed with a millisecond
+`retryAfter`. Its sweep uses version-conditional deletes.
 
-Not here, on purpose: DDoS/volumetric protection (that belongs to the edge,
-before requests cost compute), distributed sliding windows and shared token
-buckets (wrong cost profile for the primitives), HTTP middleware, and
-quota/billing metering.
+Policy names and limiter keys are host-owned opaque strings, but they must be
+primitive and non-blank. Whitespace is preserved once that validation passes.
+Ill-formed Unicode is rejected so UTF-8 hashing remains injective before the
+cryptographic digest.
+The durable tier stores only domain-separated SHA-256 hashes of those values,
+not the raw inputs, keeping entity sizes bounded. These deterministic hashes
+are pseudonymous, not anonymous: predictable inputs can still be guessed, and
+the same key remains linkable within one policy.
 
-## Where it fits
+Fixed windows have a documented edge: a burst crossing a boundary can briefly
+admit nearly twice the configured limit. This package does not claim to be
+DDoS or volumetric protection, and it does not provide HTTP middleware or
+billing metering.
 
-The memory tier depends only on
-[`@pegma/spine`](https://github.com/pegma-dev/spine) (`Clock`) and is
-importable without any storage. The durable tier declares one collection
-over an injected storage-core `Store`. The in-memory design is extracted
-from the production limiter in the RetireGolden account API, the ecosystem's
-reference application. See [docs/PROJECT_PLAN.md](docs/PROJECT_PLAN.md) for
-the model, decisions, and phases.
+## Package
+
+`@pegma/rate-limit` exposes the common vocabulary at its root and separate
+subpaths:
+
+```ts
+import { createMemoryLimiter } from "@pegma/rate-limit/memory";
+import { createDurableLimiter } from "@pegma/rate-limit/durable";
+```
+
+The memory subpath has no storage import. Both tiers accept a named policy and
+an optional spine `Clock`.
+
+See [the package README](packages/rate-limit/README.md) for examples and
+[the project plan](docs/PROJECT_PLAN.md) for design decisions and remaining
+delivery work.
+
+## Development
+
+```sh
+npm ci
+npm run format:check
+npm run check
+npm test
+```
+
+The test command starts real Azurite and verifies the durable boundary under
+concurrent writes.
 
 ## License
 
