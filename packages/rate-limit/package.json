@@ -1,6 +1,6 @@
 {
   "name": "@pegma/rate-limit",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Explicit per-instance sliding-window and shared durable fixed-window rate limiters.",
   "license": "MIT",
   "type": "module",
@@ -38,7 +38,7 @@
   },
   "dependencies": {
     "@pegma/spine": "0.1.1",
-    "@pegma/storage-core": "0.3.0"
+    "@pegma/storage-core": "0.4.0"
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",

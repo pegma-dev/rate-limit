@@ -3,8 +3,10 @@
 ## Status
 
 **Stage:** Phases 1, 2, and 4 are complete; Phase 3 has its first production
-consumer. `@pegma/rate-limit@0.1.0` is published, and pegma.dev composes the
-durable tier for its Identity surface. The public API remains unstable.
+consumer. `@pegma/rate-limit@0.1.1` is published, and pegma.dev composes the
+durable tier for its Identity surface. `0.2.0` is prepared, aligning
+`@pegma/storage-core` at `0.4.0` across the stack. The public API remains
+unstable.
 
 The exact reviewed `0.0.0` package-name bootstrap remains published under
 `bootstrap`. The first advertised `0.1.0` release was published from the
