@@ -15,6 +15,7 @@ Findings are appended as they are discovered during the scan.
 - **Evidence:** The `hits` Map is only pruned when `hits.size > PRUNE_THRESHOLD` **and** `now >= nextPruneAt`. After the first prune, `nextPruneAt` is set to `now + policy.windowMs`, so no further prune can run for a full window. An attacker who influences the limiter key (e.g. spoofed source identifiers) can submit an arbitrary number of distinct keys within one window; each allowed check appends a new Map entry, and none are removed until the window elapses. Growth is bounded only by request volume, not by `PRUNE_THRESHOLD`.
 - **Exploitability:** Requires the host to derive keys from attacker-controlled input (the documented use case — the memory tier is an abuse dampener keyed on subjects like IPs). A single client rotating keys can inflate per-instance memory linearly with request count inside one window. Impact is per-instance memory pressure / eventual OOM on long windows with high volume. No confidentiality or integrity impact.
 - **Notes:** Per-instance scope limits blast radius; the durable tier is unaffected. A size-capped eviction (e.g. prune immediately when far past threshold regardless of `nextPruneAt`, or evict oldest keys) would bound memory. Reported for host awareness; not fixed per scan-only instructions.
+- ✅ Resolved 2026-07-29 — `MAX_TRACKED_KEYS` now hard-caps the map: an untracked key at the cap attempts an expiry reclaim, then denies with a retry-after rather than growing, so a unique-key spray cannot exhaust memory. Eviction was rejected deliberately — evicting a tracked key would fail open and put writes on the attack path — so tracked keys keep their counts and the over-limit refusal path stays read-only. The reclaim scan is aimed at the moment the earliest tracked entry becomes reclaimable, with a 50 ms floor between scans, so the cap returns capacity promptly after a spray ages out without letting the scan itself become a CPU sink.
 
 ### 2. Known vulnerabilities in devDependency tree (azurite, test-only)
 
@@ -26,6 +27,7 @@ Findings are appended as they are discovered during the scan.
   - **@opentelemetry/core <2.8.0** — GHSA-8988-4f7v-96qf, unbounded memory allocation in W3C Baggage propagation (moderate), via applicationinsights → azurite.
 - **Exploitability:** None of these packages ship to consumers: the published tarball is allowlisted to `dist/**` plus README/LICENSE (`packages/rate-limit/package.json` lines 11–16), and the only runtime dependencies are the exact-pinned `@pegma/spine@0.1.1` and `@pegma/storage-core@0.3.0`, which have zero reported vulnerabilities. Exposure is limited to the local/CI test environment where Azurite binds 127.0.0.1 (`test/azurite.ts` lines 108–121). The brace-expansion DoS would require a hostile glob pattern reaching azurite's rimraf usage — not attacker-reachable in this repo's test harness.
 - **Notes:** `npm audit fix` offers no non-breaking remediation; the flagged fix (azurite 3.33.0) is a downgrade. Track upstream azurite releases and bump the devDependency when a clean tree is available. No action required for published-package security.
+- ⚠️ Disputed 2026-07-29 — not a valid finding against this repository: the advisories are real but reach nothing this repository ships or runs in production. `azurite` is a root devDependency only; the published tarball is allowlisted to `dist/**` plus README/LICENSE and depends solely on `@pegma/spine@0.1.1` and `@pegma/storage-core@0.3.0`, so no consumer ever installs the flagged tree. Re-verified 2026-07-29: `azurite@3.36.0` is still the latest release, every one of the 12 advisories resolves to the same suggested "fix" of downgrading to `azurite@3.33.0`, and forcing patched transitives through `overrides` would mean major-version upgrades inside the emulator that AGENTS.md treats as the durable specification. No safe remediation exists and none is needed; this stays a tracking note, not a defect.
 
 ### 3. No length cap on rate-limit keys
 
@@ -34,6 +36,7 @@ Findings are appended as they are discovered during the scan.
 - **Evidence:** `assertRateLimitKey` validates type, non-blankness, and Unicode well-formedness, but imposes no maximum length. The memory tier stores the raw key string as a Map key, so an attacker submitting multi-megabyte keys multiplies the per-entry memory cost of Finding 1.
 - **Exploitability:** Same precondition as Finding 1 (attacker-influenced keys). Long keys must pass through the host's own request handling first, which typically imposes its own limits, so this is an amplifier rather than a standalone vector. The durable tier is unaffected: keys are SHA-256 hashed before storage (`durable.ts` lines 105–112), so stored identifiers are fixed-length regardless of key size.
 - **Notes:** A documented maximum (e.g. a few hundred bytes) rejected at `assertRateLimitKey` would close this at negligible cost.
+- ✅ Resolved 2026-07-29 — the memory tier now rejects keys over 512 UTF-16 code units (the unit the retained string costs) before the well-formedness scan walks them, bounding per-entry cost alongside the Finding 1 key cap. The bound was deliberately **not** added to the shared `assertRateLimitKey`: the durable tier hashes keys to fixed-length identifiers, and `durable.test.ts` pins accepting 2,000-character keys as a contract, so a shared cap would have broken a tested behavior for no security gain.
 
 ## Informational (not vulnerabilities)
 
@@ -54,10 +57,12 @@ Findings are appended as they are discovered during the scan.
 
 ## Summary
 
-| # | Finding | Severity | Exploitability |
-|---|---------|----------|----------------|
-| 1 | Memory tier: unbounded map growth within a window under unique-key spray | Medium | Attacker-influenced keys; per-instance memory DoS |
-| 2 | Known vulnerabilities in devDependency tree (azurite, test-only) | High (advisory) / Low (effective) | Not reachable in published package or test harness |
-| 3 | No length cap on rate-limit keys | Low | Amplifier for #1 |
+| #   | Finding                                                                  | Severity                          | Exploitability                                     | Disposition            |
+| --- | ------------------------------------------------------------------------ | --------------------------------- | -------------------------------------------------- | ---------------------- |
+| 1   | Memory tier: unbounded map growth within a window under unique-key spray | Medium                            | Attacker-influenced keys; per-instance memory DoS  | ✅ Resolved 2026-07-29 |
+| 2   | Known vulnerabilities in devDependency tree (azurite, test-only)         | High (advisory) / Low (effective) | Not reachable in published package or test harness | ⚠️ Disputed 2026-07-29 |
+| 3   | No length cap on rate-limit keys                                         | Low                               | Amplifier for #1                                   | ✅ Resolved 2026-07-29 |
 
 No critical or exploitable-in-production vulnerabilities were found. The two hardening opportunities (Findings 1 and 3) both concern bounding per-instance memory in the memory tier when hosts derive keys from attacker-controlled input.
+
+Both were fixed on 2026-07-29 in `@pegma/rate-limit@0.1.1`: the memory tier now bounds how many keys it tracks and how long each may be, failing closed for untracked keys at the cap. Neither bound applies to the durable tier, whose stored identifiers are already fixed-length hashes. Finding 2 was disputed as a tracking note rather than a defect — see its annotation.

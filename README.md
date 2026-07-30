@@ -20,7 +20,9 @@ This component makes the choice explicit at the composition root:
 - **`createMemoryLimiter`** is a sliding window per process with zero I/O. It
   is approximate under scale-out: N instances can admit about N times the
   configured limit. It is for abuse dampening where the host accepts that
-  property.
+  property. Because its counters live in host memory, it tracks a bounded
+  number of bounded-length keys and fails closed for untracked keys once that
+  cap is reached.
 - **`createDurableLimiter`** is a fixed-window counter over
   [`@pegma/storage-core`](https://github.com/pegma-dev/storage-core). It pays
   shared-storage latency on each allowed check and is for low-rate, expensive
