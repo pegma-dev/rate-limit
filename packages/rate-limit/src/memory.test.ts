@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createMemoryLimiter,
   defineRateLimitPolicy,
+  type RateLimiter,
   type RateLimitPolicy,
 } from "./memory.js";
 
@@ -11,6 +12,25 @@ const policy = defineRateLimitPolicy({
   limit: 2,
   windowMs: 1_000,
 });
+
+/** Mirrors MAX_TRACKED_KEYS in memory.ts; both bounds are documented. */
+const MAX_TRACKED_KEYS = 10_000;
+/** Mirrors MAX_KEY_LENGTH in memory.ts. */
+const MAX_KEY_LENGTH = 512;
+
+/** Fills the limiter with `count` distinct keys, all of which must be admitted. */
+async function spray(
+  limiter: RateLimiter,
+  at: string,
+  count: number,
+): Promise<void> {
+  for (let index = 0; index < count; index += 1) {
+    const decision = await limiter.allow(`sprayed-${index}`, at);
+    if (!decision.allowed) {
+      throw new Error(`distinct key ${index} was refused below the cap`);
+    }
+  }
+}
 
 describe("createMemoryLimiter", () => {
   it("uses a sliding window and reports retry-after in milliseconds", async () => {
@@ -42,6 +62,56 @@ describe("createMemoryLimiter", () => {
     ).resolves.toEqual({ allowed: true });
     await expect(
       limiter.allow("principal/two?#", "2026-01-01T00:00:00.000Z"),
+    ).resolves.toEqual({ allowed: true });
+  });
+
+  it("bounds tracked keys and fails closed for untracked keys at the cap", async () => {
+    const limiter = createMemoryLimiter(policy);
+    const start = "2026-01-01T00:00:00.000Z";
+    await spray(limiter, start, MAX_TRACKED_KEYS);
+
+    // The cap is reached and nothing has expired, so a unique-key spray is
+    // refused instead of growing the map for the rest of the window.
+    await expect(limiter.allow("overflow", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 1_000,
+    });
+
+    // Keys already tracked keep their own counts and are not evicted, so the
+    // spray cannot reset a subject's window either.
+    await expect(limiter.allow("sprayed-0", start)).resolves.toEqual({
+      allowed: true,
+    });
+    await expect(limiter.allow("sprayed-0", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 1_000,
+    });
+  });
+
+  it("reclaims expired keys so a spray cannot hold the cap permanently", async () => {
+    const limiter = createMemoryLimiter(policy);
+    await spray(limiter, "2026-01-01T00:00:00.000Z", MAX_TRACKED_KEYS);
+
+    await expect(
+      limiter.allow("later", "2026-01-01T00:00:00.500Z"),
+    ).resolves.toEqual({ allowed: false, retryAfter: 1_000 });
+    await expect(
+      limiter.allow("later", "2026-01-01T00:00:01.001Z"),
+    ).resolves.toEqual({ allowed: true });
+  });
+
+  it("rejects a key longer than the tracked bound", async () => {
+    await expect(
+      createMemoryLimiter(policy).allow("k".repeat(MAX_KEY_LENGTH + 1)),
+    ).rejects.toThrow(`at most ${MAX_KEY_LENGTH} characters`);
+  });
+
+  it("accepts a key exactly at the tracked bound", async () => {
+    await expect(
+      createMemoryLimiter(policy).allow(
+        "k".repeat(MAX_KEY_LENGTH),
+        "2026-01-01T00:00:00.000Z",
+      ),
     ).resolves.toEqual({ allowed: true });
   });
 

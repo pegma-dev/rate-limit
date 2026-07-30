@@ -43,6 +43,16 @@ const decision = await limiter.allow(clientAddress);
 With N host instances this can admit approximately N times `limit`. Choosing
 it means accepting that property.
 
+This tier holds its counters in memory, so its footprint is bounded on both
+axes. It tracks at most 10,000 keys at once and accepts keys of at most 512
+characters; a longer key is rejected as invalid. When the key cap is reached
+and no tracked key has expired yet, a check for a key that is not already
+tracked fails closed with `retryAfter` instead of growing the map. Keys
+already tracked keep their own counts and are never evicted, so a spray of
+unique keys can neither exhaust host memory nor reset another subject's
+window. Both bounds are specific to this tier: the durable tier hashes keys to
+fixed-length identifiers and stores them, so it accepts keys of any length.
+
 ## Durable tier
 
 ```ts
