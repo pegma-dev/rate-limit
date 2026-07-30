@@ -20,11 +20,13 @@ import {
 const MAX_TRACKED_KEYS = 10_000;
 
 /**
- * How often a full expiry scan may run while the cap is reached. Reclaiming is
- * O(tracked keys), so it is rate limited to keep the work per check amortized
- * constant even when every arriving key is new.
+ * Shortest gap between expiry scans while the cap is reached. A scan is
+ * O(tracked keys), so this floor keeps the work per check amortized constant
+ * however a spray is spread across the window. Otherwise a scan is aimed at the
+ * moment reclaim actually becomes possible, so this floor — not the window — is
+ * the longest a reclaimable key can stay unreclaimed.
  */
-const PRUNE_ATTEMPTS_PER_WINDOW = 8;
+const MIN_PRUNE_INTERVAL_MS = 50;
 
 /**
  * Maximum key length this tier will track, measured in UTF-16 code units
@@ -58,7 +60,9 @@ function assertMemoryLimiterKey(key: string): void {
  * and expired keys cannot be reclaimed, checks for keys that are not already
  * tracked deny with a retry-after rather than growing without bound, so a
  * unique-key spray cannot exhaust the host's memory. Already-tracked keys are
- * unaffected.
+ * unaffected. Reclaim is attempted as soon as the earliest tracked entry
+ * expires, subject only to the {@link MIN_PRUNE_INTERVAL_MS} floor, so capacity
+ * returns within that floor of a spray ageing out.
  */
 export function createMemoryLimiter(
   inputPolicy: RateLimitPolicy,
@@ -67,9 +71,9 @@ export function createMemoryLimiter(
   const policy = defineRateLimitPolicy(inputPolicy);
   const clock = options.clock ?? systemClock;
   const hits = new Map<string, number[]>();
-  const pruneIntervalMs = Math.max(
+  const pruneFloorMs = Math.max(
     1,
-    Math.floor(policy.windowMs / PRUNE_ATTEMPTS_PER_WINDOW),
+    Math.min(MIN_PRUNE_INTERVAL_MS, policy.windowMs),
   );
   let nextPruneAt = Number.NEGATIVE_INFINITY;
 
@@ -77,15 +81,28 @@ export function createMemoryLimiter(
     return entries.filter((at) => at > cutoff);
   }
 
-  function prune(cutoff: number): void {
+  /**
+   * Drops entries at or before `cutoff` and deletes keys left with none.
+   * Returns the earliest timestamp still retained, or positive infinity when
+   * nothing is, so the caller can aim the next scan at the moment the next key
+   * becomes reclaimable.
+   */
+  function prune(cutoff: number): number {
+    let earliestRetained = Number.POSITIVE_INFINITY;
     for (const [key, entries] of hits) {
       const kept = liveEntries(entries, cutoff);
       if (kept.length === 0) {
         hits.delete(key);
-      } else {
-        hits.set(key, kept);
+        continue;
+      }
+      hits.set(key, kept);
+      for (const at of kept) {
+        if (at < earliestRetained) {
+          earliestRetained = at;
+        }
       }
     }
+    return earliestRetained;
   }
 
   return {
@@ -110,8 +127,17 @@ export function createMemoryLimiter(
       // and never on the over-limit refusal path above, which stays read-only.
       if (tracked === undefined && hits.size >= MAX_TRACKED_KEYS) {
         if (now >= nextPruneAt) {
-          prune(cutoff);
-          nextPruneAt = now + pruneIntervalMs;
+          const earliestRetained = prune(cutoff);
+          // The earliest retained entry becomes reclaimable exactly one window
+          // after it was recorded, so aim the next scan there rather than at a
+          // fixed backoff, which could land past expiry and refuse capacity
+          // that was already reclaimable. The floor bounds scan frequency.
+          nextPruneAt = Math.max(
+            now + pruneFloorMs,
+            Number.isFinite(earliestRetained)
+              ? earliestRetained + policy.windowMs
+              : now,
+          );
         }
         if (hits.size >= MAX_TRACKED_KEYS) {
           return denyForWindow(policy.windowMs);

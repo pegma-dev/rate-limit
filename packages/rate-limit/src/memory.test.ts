@@ -100,6 +100,21 @@ describe("createMemoryLimiter", () => {
     ).resolves.toEqual({ allowed: true });
   });
 
+  it("reclaims on the first check after expiry however late the last scan was", async () => {
+    const limiter = createMemoryLimiter(policy);
+    await spray(limiter, "2026-01-01T00:00:00.000Z", MAX_TRACKED_KEYS);
+
+    // A refused probe late in the window schedules the next reclaim scan. That
+    // schedule must not land past the moment the sprayed entries expire, or
+    // this key would be refused while the whole map is already dead weight.
+    await expect(
+      limiter.allow("probe", "2026-01-01T00:00:00.900Z"),
+    ).resolves.toEqual({ allowed: false, retryAfter: 1_000 });
+    await expect(
+      limiter.allow("after-expiry", "2026-01-01T00:00:01.001Z"),
+    ).resolves.toEqual({ allowed: true });
+  });
+
   it("rejects a key longer than the tracked bound", async () => {
     await expect(
       createMemoryLimiter(policy).allow("k".repeat(MAX_KEY_LENGTH + 1)),

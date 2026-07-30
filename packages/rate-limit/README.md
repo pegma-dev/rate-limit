@@ -47,12 +47,19 @@ This tier holds its counters in memory, so its footprint is bounded on both
 axes. It tracks at most 10,000 keys at once and accepts keys of at most 512
 UTF-16 code units — the unit the retained string actually costs, so an astral
 symbol such as an emoji counts two. A longer key is rejected as invalid, the
-same way other malformed keys are. When the key cap is reached
-and no tracked key has expired yet, a check for a key that is not already
-tracked fails closed with `retryAfter` instead of growing the map. Keys
-already tracked keep their own counts and are never evicted, so a spray of
-unique keys can neither exhaust host memory nor reset another subject's
-window. Both bounds are specific to this tier: the durable tier hashes keys to
+same way other malformed keys are. When the key cap is reached and no tracked
+key has expired yet, a check for a key that is not already tracked fails closed
+with `retryAfter` instead of growing the map. Keys already tracked keep their
+own counts and are never evicted, so a spray of unique keys can neither exhaust
+host memory nor reset another subject's window.
+
+Expired keys are reclaimed as soon as they expire: the reclaim scan is aimed at
+the moment the earliest tracked entry becomes reclaimable, so capacity returns
+within 50 ms of a spray ageing out however long the window is. That 50 ms is a
+floor on how often the scan may run, which is what keeps its cost amortized
+constant while the cap is held.
+
+Both bounds are specific to this tier: the durable tier hashes keys to
 fixed-length identifiers and stores them, so it accepts keys of any length.
 
 ## Durable tier
