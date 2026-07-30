@@ -21,7 +21,7 @@ const NODE_RANGE = ">=22";
 const STABLE_VERSION = /^\d+\.\d+\.\d+$/u;
 const REQUIRED_DEPENDENCIES = {
   "@pegma/spine": "0.1.1",
-  "@pegma/storage-core": "0.3.0",
+  "@pegma/storage-core": "0.4.0",
 };
 
 function fail(message) {
