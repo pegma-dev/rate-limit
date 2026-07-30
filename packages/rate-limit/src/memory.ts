@@ -27,11 +27,12 @@ const MAX_TRACKED_KEYS = 10_000;
 const PRUNE_ATTEMPTS_PER_WINDOW = 8;
 
 /**
- * Maximum key length, in UTF-16 code units, this tier will track. Only the
- * memory tier retains the raw key — the durable tier hashes it to a
- * fixed-length identifier — so only this tier needs the bound. Keys are opaque
- * subject identifiers such as an address, a principal, or a short composite of
- * those, so the bound sits far above legitimate use.
+ * Maximum key length this tier will track, measured in UTF-16 code units
+ * because that is what the retained string costs: an astral symbol such as an
+ * emoji counts two. Only the memory tier retains the raw key — the durable tier
+ * hashes it to a fixed-length identifier — so only this tier needs the bound.
+ * Keys are opaque subject identifiers such as an address, a principal, or a
+ * short composite of those, so the bound sits far above legitimate use.
  */
 const MAX_KEY_LENGTH = 512;
 
@@ -40,7 +41,7 @@ function assertMemoryLimiterKey(key: string): void {
   // the whole string, so an oversized key is rejected without being traversed.
   if (typeof key === "string" && key.length > MAX_KEY_LENGTH) {
     throw new TypeError(
-      `A memory-tier rate-limit key must be at most ${MAX_KEY_LENGTH} characters.`,
+      `A memory-tier rate-limit key must be at most ${MAX_KEY_LENGTH} UTF-16 code units.`,
     );
   }
   assertRateLimitKey(key);

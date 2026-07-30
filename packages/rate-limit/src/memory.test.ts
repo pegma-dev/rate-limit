@@ -103,13 +103,27 @@ describe("createMemoryLimiter", () => {
   it("rejects a key longer than the tracked bound", async () => {
     await expect(
       createMemoryLimiter(policy).allow("k".repeat(MAX_KEY_LENGTH + 1)),
-    ).rejects.toThrow(`at most ${MAX_KEY_LENGTH} characters`);
+    ).rejects.toThrow(`at most ${MAX_KEY_LENGTH} UTF-16 code units`);
   });
 
   it("accepts a key exactly at the tracked bound", async () => {
     await expect(
       createMemoryLimiter(policy).allow(
         "k".repeat(MAX_KEY_LENGTH),
+        "2026-01-01T00:00:00.000Z",
+      ),
+    ).resolves.toEqual({ allowed: true });
+  });
+
+  it("measures the key bound in UTF-16 code units, not code points", async () => {
+    // Each astral symbol is a surrogate pair, so half as many fit.
+    const limiter = createMemoryLimiter(policy);
+    await expect(
+      limiter.allow("\u{1f680}".repeat(MAX_KEY_LENGTH / 2 + 1)),
+    ).rejects.toThrow(`at most ${MAX_KEY_LENGTH} UTF-16 code units`);
+    await expect(
+      limiter.allow(
+        "\u{1f680}".repeat(MAX_KEY_LENGTH / 2),
         "2026-01-01T00:00:00.000Z",
       ),
     ).resolves.toEqual({ allowed: true });

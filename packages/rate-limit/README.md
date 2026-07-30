@@ -45,7 +45,9 @@ it means accepting that property.
 
 This tier holds its counters in memory, so its footprint is bounded on both
 axes. It tracks at most 10,000 keys at once and accepts keys of at most 512
-characters; a longer key is rejected as invalid. When the key cap is reached
+UTF-16 code units — the unit the retained string actually costs, so an astral
+symbol such as an emoji counts two. A longer key is rejected as invalid, the
+same way other malformed keys are. When the key cap is reached
 and no tracked key has expired yet, a check for a key that is not already
 tracked fails closed with `retryAfter` instead of growing the map. Keys
 already tracked keep their own counts and are never evicted, so a spray of
