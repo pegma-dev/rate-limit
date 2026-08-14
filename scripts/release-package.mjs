@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE_NAME = "@pegma/rate-limit";
 const PACKAGE_DIRECTORY = "packages/rate-limit";
-const PACKAGE_MANAGER = "npm@11.18.0";
+const PACKAGE_MANAGER = "pnpm@10.34.5";
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/rate-limit.git";
 const NODE_RANGE = ">=22";
 const STABLE_VERSION = /^\d+\.\d+\.\d+$/u;
@@ -48,14 +48,96 @@ function run(command, arguments_, options = {}) {
 }
 
 function runNpm(arguments_, options = {}) {
-  const npmExecPath = process.env.npm_execpath;
-  if (npmExecPath !== undefined) {
-    return run(process.execPath, [npmExecPath, ...arguments_], options);
-  }
   return run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
     ...options,
     shell: process.platform === "win32",
   });
+}
+
+function parsePnpmImporterSpecifiers(lockText, importer) {
+  const lines = lockText.split("\n");
+  let inImporters = false;
+  let inTarget = false;
+  let inDependencies = false;
+  let currentDep = null;
+  const dependencies = {};
+  let targetIndent;
+
+  for (const line of lines) {
+    if (!inImporters) {
+      if (line === "importers:") {
+        inImporters = true;
+      }
+      continue;
+    }
+    if (line !== "" && !/^[ \t]/u.test(line)) {
+      break;
+    }
+    const indent = line.match(/^ */u)?.[0].length ?? 0;
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue;
+    }
+    if (!inTarget) {
+      const key = trimmed.replace(/:$/u, "").replaceAll(/^['"]|['"]$/gu, "");
+      if (key === importer && trimmed.endsWith(":")) {
+        inTarget = true;
+        targetIndent = indent;
+      }
+      continue;
+    }
+    if (indent <= targetIndent) {
+      break;
+    }
+    if (!inDependencies) {
+      if (trimmed === "dependencies:") {
+        inDependencies = true;
+      }
+      continue;
+    }
+    if (trimmed.endsWith(":") && !trimmed.startsWith("specifier:")) {
+      if (
+        trimmed === "optionalDependencies:" ||
+        trimmed === "devDependencies:" ||
+        trimmed === "peerDependencies:"
+      ) {
+        break;
+      }
+      currentDep = trimmed.slice(0, -1).replaceAll(/^['"]|['"]$/gu, "");
+      continue;
+    }
+    if (currentDep !== null && trimmed.startsWith("specifier:")) {
+      dependencies[currentDep] = trimmed
+        .slice("specifier:".length)
+        .trim()
+        .replaceAll(/^['"]|['"]$/gu, "");
+    }
+  }
+  return inTarget ? dependencies : null;
+}
+
+async function readPnpmWorkspacePackages(root) {
+  const text = await readFile(join(root, "pnpm-workspace.yaml"), "utf8");
+  const packages = [];
+  let inPackages = false;
+  for (const line of text.split("\n")) {
+    if (line.trim() === "packages:") {
+      inPackages = true;
+      continue;
+    }
+    if (!inPackages) {
+      continue;
+    }
+    const match = /^[ \t]+-[ \t]+["']?([^"'#]+?)["']?[ \t]*$/u.exec(line);
+    if (match !== null) {
+      packages.push(match[1].trim());
+      continue;
+    }
+    if (line.trim() !== "" && !/^[ \t]/u.test(line)) {
+      break;
+    }
+  }
+  return packages;
 }
 
 async function readJson(path) {
@@ -94,8 +176,12 @@ export async function validateRepository(options = {}) {
   const manifest = await readJson(
     join(root, PACKAGE_DIRECTORY, "package.json"),
   );
-  const lock = await readJson(join(root, "package-lock.json"));
-  const lockEntry = lock.packages?.[PACKAGE_DIRECTORY];
+  const lockText = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
+  const lockDependencies = parsePnpmImporterSpecifiers(
+    lockText,
+    PACKAGE_DIRECTORY,
+  );
+  const workspacePackages = await readPnpmWorkspacePackages(root);
   const packageDirectories = (
     await readdir(join(root, "packages"), { withFileTypes: true })
   )
@@ -106,7 +192,8 @@ export async function validateRepository(options = {}) {
     rootManifest.name !== "rate-limit" ||
     rootManifest.private !== true ||
     rootManifest.packageManager !== PACKAGE_MANAGER ||
-    !sameJson(rootManifest.workspaces, ["packages/*"])
+    !sameJson(rootManifest.workspaces, ["packages/*"]) ||
+    !sameJson(workspacePackages, ["packages/*"])
   ) {
     fail("the private root workspace metadata is invalid");
   }
@@ -131,13 +218,12 @@ export async function validateRepository(options = {}) {
   }
   if (
     !sameJson(manifest.dependencies, REQUIRED_DEPENDENCIES) ||
-    !sameJson(lockEntry?.dependencies, REQUIRED_DEPENDENCIES)
+    !sameJson(lockDependencies, REQUIRED_DEPENDENCIES)
   ) {
     fail("Pegma runtime dependencies must match the reviewed exact pins");
   }
   if (
-    lockEntry?.name !== PACKAGE_NAME ||
-    lockEntry.version !== manifest.version ||
+    lockDependencies === null ||
     typeof manifest.scripts?.prepack !== "string" ||
     !manifest.scripts.prepack.includes("build")
   ) {

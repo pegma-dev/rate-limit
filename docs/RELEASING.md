@@ -189,7 +189,7 @@ gh run download "${run_id}" \
   --name "rate-limit-release-${run_id}" \
   --dir "${artifact_dir}"
 test -f "${artifact_dir}/package-manifest.json"
-npm run release:registry:check -- -- --manifest "${artifact_dir}/package-manifest.json"
+pnpm run release:registry:check -- --manifest "${artifact_dir}/package-manifest.json"
 npm dist-tag ls @pegma/rate-limit
 ```
 
