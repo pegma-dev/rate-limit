@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 
 const PACKAGE_NAME = "@pegma/rate-limit";
 const PACKAGE_DIRECTORY = "packages/rate-limit";
-const PACKAGE_MANAGER = "npm@11.18.0";
+const PACKAGE_MANAGER = "pnpm@10.34.5";
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/rate-limit.git";
 const NODE_RANGE = ">=22";
 const STABLE_VERSION = /^\d+\.\d+\.\d+$/u;
@@ -32,7 +32,7 @@ function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
     cwd: options.cwd,
     encoding: "utf8",
-    env: process.env,
+    env: options.env ?? process.env,
     shell: options.shell ?? false,
     stdio: options.capture ? "pipe" : "inherit",
   });
@@ -47,15 +47,341 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
+function npmEnvironment(environment = process.env) {
+  const isolated = { ...environment };
+  delete isolated.npm_execpath;
+  return isolated;
+}
+
 function runNpm(arguments_, options = {}) {
-  const npmExecPath = process.env.npm_execpath;
-  if (npmExecPath !== undefined) {
-    return run(process.execPath, [npmExecPath, ...arguments_], options);
-  }
   return run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
     ...options,
+    env: npmEnvironment(options.env ?? process.env),
     shell: process.platform === "win32",
   });
+}
+
+function decodeYamlScalar(value) {
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
+}
+
+const DEPENDENCY_SECTIONS = new Set([
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+]);
+
+function parsePnpmImporterSections(lockText, importer) {
+  const lines = lockText.split("\n");
+  let inImporters = false;
+  let inTarget = false;
+  let currentSection = null;
+  let currentDep = null;
+  const sections = {};
+  let targetIndent;
+
+  for (const line of lines) {
+    if (!inImporters) {
+      if (line === "importers:") {
+        inImporters = true;
+      }
+      continue;
+    }
+    if (line !== "" && !/^[ \t]/u.test(line)) {
+      break;
+    }
+    const indent = line.match(/^ */u)?.[0].length ?? 0;
+    const trimmed = line.trim();
+    if (trimmed === "" || trimmed.startsWith("#")) {
+      continue;
+    }
+    if (!inTarget) {
+      const key = decodeYamlScalar(trimmed.replace(/:$/u, ""));
+      if (key === importer && trimmed.endsWith(":")) {
+        inTarget = true;
+        targetIndent = indent;
+      }
+      continue;
+    }
+    if (indent <= targetIndent) {
+      break;
+    }
+    if (DEPENDENCY_SECTIONS.has(trimmed.replace(/:$/u, ""))) {
+      currentSection = trimmed.replace(/:$/u, "");
+      sections[currentSection] = {};
+      currentDep = null;
+      continue;
+    }
+    if (currentSection === null) {
+      continue;
+    }
+    if (
+      trimmed.endsWith(":") &&
+      !trimmed.startsWith("specifier:") &&
+      !trimmed.startsWith("version:")
+    ) {
+      currentDep = decodeYamlScalar(trimmed.slice(0, -1));
+      sections[currentSection][currentDep] = {
+        specifier: null,
+        version: null,
+      };
+      continue;
+    }
+    if (currentDep === null) {
+      continue;
+    }
+    if (trimmed.startsWith("specifier:")) {
+      sections[currentSection][currentDep].specifier = decodeYamlScalar(
+        trimmed.slice("specifier:".length).trim(),
+      );
+      continue;
+    }
+    if (trimmed.startsWith("version:")) {
+      sections[currentSection][currentDep].version = decodeYamlScalar(
+        trimmed.slice("version:".length).trim(),
+      );
+    }
+  }
+  return inTarget ? sections : null;
+}
+
+function parseSemver(version) {
+  const match =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/u.exec(
+      version,
+    );
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4],
+  };
+}
+
+function compareSemver(left, right) {
+  if (left.major !== right.major) {
+    return left.major - right.major;
+  }
+  if (left.minor !== right.minor) {
+    return left.minor - right.minor;
+  }
+  if (left.patch !== right.patch) {
+    return left.patch - right.patch;
+  }
+  if (left.prerelease === undefined && right.prerelease === undefined) {
+    return 0;
+  }
+  if (left.prerelease === undefined) {
+    return 1;
+  }
+  if (right.prerelease === undefined) {
+    return -1;
+  }
+  return left.prerelease < right.prerelease
+    ? -1
+    : left.prerelease > right.prerelease
+      ? 1
+      : 0;
+}
+
+function parseRangeOperand(spec) {
+  const full = parseSemver(spec);
+  if (full !== null) {
+    return { ...full, precision: "patch" };
+  }
+  const patchWildcard = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(?:x|X|\*)$/u.exec(spec);
+  if (patchWildcard !== null) {
+    return {
+      major: Number(patchWildcard[1]),
+      minor: Number(patchWildcard[2]),
+      patch: 0,
+      precision: "minor",
+    };
+  }
+  const majorMinor = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(spec);
+  if (majorMinor !== null) {
+    return {
+      major: Number(majorMinor[1]),
+      minor: Number(majorMinor[2]),
+      patch: 0,
+      precision: "minor",
+    };
+  }
+  const minorWildcard = /^(0|[1-9]\d*)\.(?:x|X|\*)$/u.exec(spec);
+  if (minorWildcard !== null) {
+    return {
+      major: Number(minorWildcard[1]),
+      minor: 0,
+      patch: 0,
+      precision: "major",
+    };
+  }
+  const majorOnly = /^(0|[1-9]\d*)$/u.exec(spec);
+  if (majorOnly !== null) {
+    return {
+      major: Number(majorOnly[1]),
+      minor: 0,
+      patch: 0,
+      precision: "major",
+    };
+  }
+  return null;
+}
+
+function caretCeiling(floor) {
+  if (floor.precision === "major") {
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  if (floor.precision === "minor") {
+    if (floor.major === 0) {
+      return { major: 0, minor: floor.minor + 1, patch: 0 };
+    }
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  if (floor.major > 0) {
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  if (floor.minor > 0) {
+    return { major: 0, minor: floor.minor + 1, patch: 0 };
+  }
+  return { major: 0, minor: 0, patch: floor.patch + 1 };
+}
+
+function tildeCeiling(floor) {
+  if (floor.precision === "major") {
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  return { major: floor.major, minor: floor.minor + 1, patch: 0 };
+}
+
+function rangeAllowsResolved(resolved, floor) {
+  if (resolved.prerelease === undefined) {
+    return true;
+  }
+  return (
+    floor.prerelease !== undefined &&
+    resolved.major === floor.major &&
+    resolved.minor === floor.minor &&
+    resolved.patch === floor.patch
+  );
+}
+
+function resolvedLockVersion(version) {
+  const paren = version.indexOf("(");
+  return paren === -1 ? version : version.slice(0, paren);
+}
+
+function versionSatisfiesSpecifier(version, specifier) {
+  const resolved = parseSemver(resolvedLockVersion(version));
+  if (resolved === null) {
+    return false;
+  }
+  if (specifier === "*" || specifier === "x" || specifier === "X") {
+    return resolved.prerelease === undefined;
+  }
+  const exact = parseSemver(specifier);
+  if (exact !== null) {
+    return compareSemver(resolved, exact) === 0;
+  }
+  const caret = /^\^(.+)$/u.exec(specifier);
+  if (caret !== null) {
+    const floor = parseRangeOperand(caret[1]);
+    if (floor === null || !rangeAllowsResolved(resolved, floor)) {
+      return false;
+    }
+    return (
+      compareSemver(resolved, floor) >= 0 &&
+      compareSemver(resolved, caretCeiling(floor)) < 0
+    );
+  }
+  const tilde = /^~(.+)$/u.exec(specifier);
+  if (tilde !== null) {
+    const floor = parseRangeOperand(tilde[1]);
+    if (floor === null || !rangeAllowsResolved(resolved, floor)) {
+      return false;
+    }
+    return (
+      compareSemver(resolved, floor) >= 0 &&
+      compareSemver(resolved, tildeCeiling(floor)) < 0
+    );
+  }
+  const comparator = /^(>=|>|<=|<|=)\s*(.+)$/u.exec(specifier);
+  if (comparator === null) {
+    return false;
+  }
+  const bound = parseSemver(comparator[2]);
+  if (bound === null || !rangeAllowsResolved(resolved, bound)) {
+    return false;
+  }
+  const order = compareSemver(resolved, bound);
+  switch (comparator[1]) {
+    case ">=":
+      return order >= 0;
+    case ">":
+      return order > 0;
+    case "<=":
+      return order <= 0;
+    case "<":
+      return order < 0;
+    default:
+      return order === 0;
+  }
+}
+
+function lockPinsMatch(lockDependencies, required) {
+  if (lockDependencies === undefined) {
+    return Object.keys(required).length === 0;
+  }
+  const requiredNames = Object.keys(required).sort();
+  if (!sameJson(Object.keys(lockDependencies).sort(), requiredNames)) {
+    return false;
+  }
+  return requiredNames.every((name) => {
+    const entry = lockDependencies[name];
+    const pin = required[name];
+    return (
+      entry?.specifier === pin &&
+      typeof entry?.version === "string" &&
+      versionSatisfiesSpecifier(entry.version, pin)
+    );
+  });
+}
+
+async function readPnpmWorkspacePackages(root) {
+  const text = await readFile(join(root, "pnpm-workspace.yaml"), "utf8");
+  const packages = [];
+  let inPackages = false;
+  for (const line of text.split("\n")) {
+    if (line.trim() === "packages:") {
+      inPackages = true;
+      continue;
+    }
+    if (!inPackages) {
+      continue;
+    }
+    const match = /^[ \t]+-[ \t]+["']?([^"'#]+?)["']?[ \t]*$/u.exec(line);
+    if (match !== null) {
+      packages.push(match[1].trim());
+      continue;
+    }
+    if (line.trim() !== "" && !/^[ \t]/u.test(line)) {
+      break;
+    }
+  }
+  return packages;
 }
 
 async function readJson(path) {
@@ -94,8 +420,9 @@ export async function validateRepository(options = {}) {
   const manifest = await readJson(
     join(root, PACKAGE_DIRECTORY, "package.json"),
   );
-  const lock = await readJson(join(root, "package-lock.json"));
-  const lockEntry = lock.packages?.[PACKAGE_DIRECTORY];
+  const lockText = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
+  const lockSections = parsePnpmImporterSections(lockText, PACKAGE_DIRECTORY);
+  const workspacePackages = await readPnpmWorkspacePackages(root);
   const packageDirectories = (
     await readdir(join(root, "packages"), { withFileTypes: true })
   )
@@ -106,7 +433,8 @@ export async function validateRepository(options = {}) {
     rootManifest.name !== "rate-limit" ||
     rootManifest.private !== true ||
     rootManifest.packageManager !== PACKAGE_MANAGER ||
-    !sameJson(rootManifest.workspaces, ["packages/*"])
+    !sameJson(rootManifest.workspaces, ["packages/*"]) ||
+    !sameJson(workspacePackages, ["packages/*"])
   ) {
     fail("the private root workspace metadata is invalid");
   }
@@ -131,13 +459,12 @@ export async function validateRepository(options = {}) {
   }
   if (
     !sameJson(manifest.dependencies, REQUIRED_DEPENDENCIES) ||
-    !sameJson(lockEntry?.dependencies, REQUIRED_DEPENDENCIES)
+    lockSections === null ||
+    !lockPinsMatch(lockSections.dependencies, REQUIRED_DEPENDENCIES)
   ) {
     fail("Pegma runtime dependencies must match the reviewed exact pins");
   }
   if (
-    lockEntry?.name !== PACKAGE_NAME ||
-    lockEntry.version !== manifest.version ||
     typeof manifest.scripts?.prepack !== "string" ||
     !manifest.scripts.prepack.includes("build")
   ) {

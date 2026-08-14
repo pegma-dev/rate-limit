@@ -138,7 +138,7 @@ The workflow intentionally rejects `0.0.0`; its first permitted release is
 This separate reviewed pull request must:
 
 1. change `packages/rate-limit/package.json` from `0.0.0` to `0.1.0`;
-2. regenerate `package-lock.json` and verify its workspace entry is `0.1.0`;
+2. regenerate `pnpm-lock.yaml` and verify its workspace importer pins `0.1.0`;
 3. update README and plan status with the advertised release notes; and
 4. pass the full gate and release pack smoke on Node 22 and 24.
 
@@ -189,7 +189,7 @@ gh run download "${run_id}" \
   --name "rate-limit-release-${run_id}" \
   --dir "${artifact_dir}"
 test -f "${artifact_dir}/package-manifest.json"
-npm run release:registry:check -- -- --manifest "${artifact_dir}/package-manifest.json"
+pnpm run release:registry:check -- --manifest "${artifact_dir}/package-manifest.json"
 npm dist-tag ls @pegma/rate-limit
 ```
 

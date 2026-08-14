@@ -5,7 +5,7 @@
   "description": "Explicit approximate and durable rate limiting for Pegma components.",
   "license": "MIT",
   "type": "module",
-  "packageManager": "npm@11.18.0",
+  "packageManager": "pnpm@10.34.5",
   "engines": {
     "node": ">=22"
   },
@@ -22,7 +22,7 @@
     "release:pack": "node scripts/release-package.mjs pack",
     "release:publish": "node scripts/release-package.mjs publish",
     "release:registry:check": "node scripts/release-package.mjs registry-check",
-    "test": "npm run build && vitest run"
+    "test": "pnpm run build && vitest run"
   },
   "devDependencies": {
     "@azure/data-tables": "13.3.1",
