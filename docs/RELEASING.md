@@ -138,7 +138,7 @@ The workflow intentionally rejects `0.0.0`; its first permitted release is
 This separate reviewed pull request must:
 
 1. change `packages/rate-limit/package.json` from `0.0.0` to `0.1.0`;
-2. regenerate `package-lock.json` and verify its workspace entry is `0.1.0`;
+2. regenerate `pnpm-lock.yaml` and verify its workspace importer pins `0.1.0`;
 3. update README and plan status with the advertised release notes; and
 4. pass the full gate and release pack smoke on Node 22 and 24.
 

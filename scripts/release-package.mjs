@@ -32,7 +32,7 @@ function run(command, arguments_, options = {}) {
   const result = spawnSync(command, arguments_, {
     cwd: options.cwd,
     encoding: "utf8",
-    env: process.env,
+    env: options.env ?? process.env,
     shell: options.shell ?? false,
     stdio: options.capture ? "pipe" : "inherit",
   });
@@ -47,14 +47,25 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
+function npmEnvironment(environment = process.env) {
+  const isolated = { ...environment };
+  delete isolated.npm_execpath;
+  return isolated;
+}
+
 function runNpm(arguments_, options = {}) {
   return run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
     ...options,
+    env: npmEnvironment(options.env ?? process.env),
     shell: process.platform === "win32",
   });
 }
 
-function parsePnpmImporterSpecifiers(lockText, importer) {
+function unquoteYamlScalar(value) {
+  return value.replaceAll(/^['"]|['"]$/gu, "");
+}
+
+function parsePnpmImporterDependencies(lockText, importer) {
   const lines = lockText.split("\n");
   let inImporters = false;
   let inTarget = false;
@@ -79,7 +90,7 @@ function parsePnpmImporterSpecifiers(lockText, importer) {
       continue;
     }
     if (!inTarget) {
-      const key = trimmed.replace(/:$/u, "").replaceAll(/^['"]|['"]$/gu, "");
+      const key = unquoteYamlScalar(trimmed.replace(/:$/u, ""));
       if (key === importer && trimmed.endsWith(":")) {
         inTarget = true;
         targetIndent = indent;
@@ -95,25 +106,53 @@ function parsePnpmImporterSpecifiers(lockText, importer) {
       }
       continue;
     }
-    if (trimmed.endsWith(":") && !trimmed.startsWith("specifier:")) {
-      if (
-        trimmed === "optionalDependencies:" ||
-        trimmed === "devDependencies:" ||
-        trimmed === "peerDependencies:"
-      ) {
-        break;
-      }
-      currentDep = trimmed.slice(0, -1).replaceAll(/^['"]|['"]$/gu, "");
+    if (
+      trimmed === "optionalDependencies:" ||
+      trimmed === "devDependencies:" ||
+      trimmed === "peerDependencies:"
+    ) {
+      break;
+    }
+    if (
+      trimmed.endsWith(":") &&
+      !trimmed.startsWith("specifier:") &&
+      !trimmed.startsWith("version:")
+    ) {
+      currentDep = unquoteYamlScalar(trimmed.slice(0, -1));
+      dependencies[currentDep] = { specifier: null, version: null };
       continue;
     }
-    if (currentDep !== null && trimmed.startsWith("specifier:")) {
-      dependencies[currentDep] = trimmed
-        .slice("specifier:".length)
-        .trim()
-        .replaceAll(/^['"]|['"]$/gu, "");
+    if (currentDep === null) {
+      continue;
+    }
+    if (trimmed.startsWith("specifier:")) {
+      dependencies[currentDep].specifier = unquoteYamlScalar(
+        trimmed.slice("specifier:".length).trim(),
+      );
+      continue;
+    }
+    if (trimmed.startsWith("version:")) {
+      dependencies[currentDep].version = unquoteYamlScalar(
+        trimmed.slice("version:".length).trim(),
+      );
     }
   }
   return inTarget ? dependencies : null;
+}
+
+function lockPinsMatch(lockDependencies, required) {
+  if (lockDependencies === null) {
+    return false;
+  }
+  const requiredNames = Object.keys(required).sort();
+  if (!sameJson(Object.keys(lockDependencies).sort(), requiredNames)) {
+    return false;
+  }
+  return requiredNames.every((name) => {
+    const entry = lockDependencies[name];
+    const pin = required[name];
+    return entry?.specifier === pin && entry?.version === pin;
+  });
 }
 
 async function readPnpmWorkspacePackages(root) {
@@ -177,7 +216,7 @@ export async function validateRepository(options = {}) {
     join(root, PACKAGE_DIRECTORY, "package.json"),
   );
   const lockText = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
-  const lockDependencies = parsePnpmImporterSpecifiers(
+  const lockDependencies = parsePnpmImporterDependencies(
     lockText,
     PACKAGE_DIRECTORY,
   );
@@ -218,7 +257,7 @@ export async function validateRepository(options = {}) {
   }
   if (
     !sameJson(manifest.dependencies, REQUIRED_DEPENDENCIES) ||
-    !sameJson(lockDependencies, REQUIRED_DEPENDENCIES)
+    !lockPinsMatch(lockDependencies, REQUIRED_DEPENDENCIES)
   ) {
     fail("Pegma runtime dependencies must match the reviewed exact pins");
   }
