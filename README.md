@@ -68,6 +68,7 @@ delivery work.
 ## Development
 
 ```sh
+npm install -g corepack
 corepack enable
 pnpm install --frozen-lockfile
 pnpm run format:check

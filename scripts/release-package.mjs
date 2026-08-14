@@ -61,17 +61,34 @@ function runNpm(arguments_, options = {}) {
   });
 }
 
-function unquoteYamlScalar(value) {
-  return value.replaceAll(/^['"]|['"]$/gu, "");
+function decodeYamlScalar(value) {
+  if (value.length >= 2 && value.startsWith("'") && value.endsWith("'")) {
+    return value.slice(1, -1).replaceAll("''", "'");
+  }
+  if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value.slice(1, -1);
+    }
+  }
+  return value;
 }
 
-function parsePnpmImporterDependencies(lockText, importer) {
+const DEPENDENCY_SECTIONS = new Set([
+  "dependencies",
+  "devDependencies",
+  "optionalDependencies",
+  "peerDependencies",
+]);
+
+function parsePnpmImporterSections(lockText, importer) {
   const lines = lockText.split("\n");
   let inImporters = false;
   let inTarget = false;
-  let inDependencies = false;
+  let currentSection = null;
   let currentDep = null;
-  const dependencies = {};
+  const sections = {};
   let targetIndent;
 
   for (const line of lines) {
@@ -90,7 +107,7 @@ function parsePnpmImporterDependencies(lockText, importer) {
       continue;
     }
     if (!inTarget) {
-      const key = unquoteYamlScalar(trimmed.replace(/:$/u, ""));
+      const key = decodeYamlScalar(trimmed.replace(/:$/u, ""));
       if (key === importer && trimmed.endsWith(":")) {
         inTarget = true;
         targetIndent = indent;
@@ -100,49 +117,166 @@ function parsePnpmImporterDependencies(lockText, importer) {
     if (indent <= targetIndent) {
       break;
     }
-    if (!inDependencies) {
-      if (trimmed === "dependencies:") {
-        inDependencies = true;
-      }
+    if (DEPENDENCY_SECTIONS.has(trimmed.replace(/:$/u, ""))) {
+      currentSection = trimmed.replace(/:$/u, "");
+      sections[currentSection] = {};
+      currentDep = null;
       continue;
     }
-    if (
-      trimmed === "optionalDependencies:" ||
-      trimmed === "devDependencies:" ||
-      trimmed === "peerDependencies:"
-    ) {
-      break;
+    if (currentSection === null) {
+      continue;
     }
     if (
       trimmed.endsWith(":") &&
       !trimmed.startsWith("specifier:") &&
       !trimmed.startsWith("version:")
     ) {
-      currentDep = unquoteYamlScalar(trimmed.slice(0, -1));
-      dependencies[currentDep] = { specifier: null, version: null };
+      currentDep = decodeYamlScalar(trimmed.slice(0, -1));
+      sections[currentSection][currentDep] = {
+        specifier: null,
+        version: null,
+      };
       continue;
     }
     if (currentDep === null) {
       continue;
     }
     if (trimmed.startsWith("specifier:")) {
-      dependencies[currentDep].specifier = unquoteYamlScalar(
+      sections[currentSection][currentDep].specifier = decodeYamlScalar(
         trimmed.slice("specifier:".length).trim(),
       );
       continue;
     }
     if (trimmed.startsWith("version:")) {
-      dependencies[currentDep].version = unquoteYamlScalar(
+      sections[currentSection][currentDep].version = decodeYamlScalar(
         trimmed.slice("version:".length).trim(),
       );
     }
   }
-  return inTarget ? dependencies : null;
+  return inTarget ? sections : null;
+}
+
+function parseSemver(version) {
+  const match =
+    /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?$/u.exec(
+      version,
+    );
+  if (match === null) {
+    return null;
+  }
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4],
+  };
+}
+
+function compareSemver(left, right) {
+  if (left.major !== right.major) {
+    return left.major - right.major;
+  }
+  if (left.minor !== right.minor) {
+    return left.minor - right.minor;
+  }
+  if (left.patch !== right.patch) {
+    return left.patch - right.patch;
+  }
+  if (left.prerelease === undefined && right.prerelease === undefined) {
+    return 0;
+  }
+  if (left.prerelease === undefined) {
+    return 1;
+  }
+  if (right.prerelease === undefined) {
+    return -1;
+  }
+  return left.prerelease < right.prerelease
+    ? -1
+    : left.prerelease > right.prerelease
+      ? 1
+      : 0;
+}
+
+function caretCeiling(floor) {
+  if (floor.major > 0) {
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  if (floor.minor > 0) {
+    return { major: 0, minor: floor.minor + 1, patch: 0 };
+  }
+  return { major: 0, minor: 0, patch: floor.patch + 1 };
+}
+
+function resolvedLockVersion(version) {
+  const paren = version.indexOf("(");
+  return paren === -1 ? version : version.slice(0, paren);
+}
+
+function versionSatisfiesSpecifier(version, specifier) {
+  const resolved = parseSemver(resolvedLockVersion(version));
+  if (resolved === null) {
+    return false;
+  }
+  if (specifier === "*" || specifier === "x" || specifier === "X") {
+    return true;
+  }
+  const exact = parseSemver(specifier);
+  if (exact !== null) {
+    return compareSemver(resolved, exact) === 0;
+  }
+  const caret = /^\^(.+)$/u.exec(specifier);
+  if (caret !== null) {
+    const floor = parseSemver(caret[1]);
+    if (floor === null) {
+      return false;
+    }
+    return (
+      compareSemver(resolved, floor) >= 0 &&
+      compareSemver(resolved, caretCeiling(floor)) < 0
+    );
+  }
+  const tilde = /^~(.+)$/u.exec(specifier);
+  if (tilde !== null) {
+    const floor = parseSemver(tilde[1]);
+    if (floor === null) {
+      return false;
+    }
+    return (
+      compareSemver(resolved, floor) >= 0 &&
+      compareSemver(resolved, {
+        major: floor.major,
+        minor: floor.minor + 1,
+        patch: 0,
+      }) < 0
+    );
+  }
+  const comparator = /^(>=|>|<=|<|=)\s*(.+)$/u.exec(specifier);
+  if (comparator === null) {
+    return false;
+  }
+  const bound = parseSemver(comparator[2]);
+  if (bound === null) {
+    return false;
+  }
+  const order = compareSemver(resolved, bound);
+  switch (comparator[1]) {
+    case ">=":
+      return order >= 0;
+    case ">":
+      return order > 0;
+    case "<=":
+      return order <= 0;
+    case "<":
+      return order < 0;
+    default:
+      return order === 0;
+  }
 }
 
 function lockPinsMatch(lockDependencies, required) {
-  if (lockDependencies === null) {
-    return false;
+  if (lockDependencies === undefined) {
+    return Object.keys(required).length === 0;
   }
   const requiredNames = Object.keys(required).sort();
   if (!sameJson(Object.keys(lockDependencies).sort(), requiredNames)) {
@@ -151,7 +285,11 @@ function lockPinsMatch(lockDependencies, required) {
   return requiredNames.every((name) => {
     const entry = lockDependencies[name];
     const pin = required[name];
-    return entry?.specifier === pin && entry?.version === pin;
+    return (
+      entry?.specifier === pin &&
+      typeof entry?.version === "string" &&
+      versionSatisfiesSpecifier(entry.version, pin)
+    );
   });
 }
 
@@ -216,10 +354,7 @@ export async function validateRepository(options = {}) {
     join(root, PACKAGE_DIRECTORY, "package.json"),
   );
   const lockText = await readFile(join(root, "pnpm-lock.yaml"), "utf8");
-  const lockDependencies = parsePnpmImporterDependencies(
-    lockText,
-    PACKAGE_DIRECTORY,
-  );
+  const lockSections = parsePnpmImporterSections(lockText, PACKAGE_DIRECTORY);
   const workspacePackages = await readPnpmWorkspacePackages(root);
   const packageDirectories = (
     await readdir(join(root, "packages"), { withFileTypes: true })
@@ -257,12 +392,16 @@ export async function validateRepository(options = {}) {
   }
   if (
     !sameJson(manifest.dependencies, REQUIRED_DEPENDENCIES) ||
-    !lockPinsMatch(lockDependencies, REQUIRED_DEPENDENCIES)
+    lockSections === null ||
+    !lockPinsMatch(lockSections.dependencies, REQUIRED_DEPENDENCIES) ||
+    !lockPinsMatch(
+      lockSections.peerDependencies,
+      manifest.peerDependencies ?? {},
+    )
   ) {
     fail("Pegma runtime dependencies must match the reviewed exact pins");
   }
   if (
-    lockDependencies === null ||
     typeof manifest.scripts?.prepack !== "string" ||
     !manifest.scripts.prepack.includes("build")
   ) {
