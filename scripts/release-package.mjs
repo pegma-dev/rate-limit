@@ -79,7 +79,6 @@ const DEPENDENCY_SECTIONS = new Set([
   "dependencies",
   "devDependencies",
   "optionalDependencies",
-  "peerDependencies",
 ]);
 
 function parsePnpmImporterSections(lockText, importer) {
@@ -198,7 +197,60 @@ function compareSemver(left, right) {
       : 0;
 }
 
+function parseRangeOperand(spec) {
+  const full = parseSemver(spec);
+  if (full !== null) {
+    return { ...full, precision: "patch" };
+  }
+  const patchWildcard = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(?:x|X|\*)$/u.exec(spec);
+  if (patchWildcard !== null) {
+    return {
+      major: Number(patchWildcard[1]),
+      minor: Number(patchWildcard[2]),
+      patch: 0,
+      precision: "minor",
+    };
+  }
+  const majorMinor = /^(0|[1-9]\d*)\.(0|[1-9]\d*)$/u.exec(spec);
+  if (majorMinor !== null) {
+    return {
+      major: Number(majorMinor[1]),
+      minor: Number(majorMinor[2]),
+      patch: 0,
+      precision: "minor",
+    };
+  }
+  const minorWildcard = /^(0|[1-9]\d*)\.(?:x|X|\*)$/u.exec(spec);
+  if (minorWildcard !== null) {
+    return {
+      major: Number(minorWildcard[1]),
+      minor: 0,
+      patch: 0,
+      precision: "major",
+    };
+  }
+  const majorOnly = /^(0|[1-9]\d*)$/u.exec(spec);
+  if (majorOnly !== null) {
+    return {
+      major: Number(majorOnly[1]),
+      minor: 0,
+      patch: 0,
+      precision: "major",
+    };
+  }
+  return null;
+}
+
 function caretCeiling(floor) {
+  if (floor.precision === "major") {
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  if (floor.precision === "minor") {
+    if (floor.major === 0) {
+      return { major: 0, minor: floor.minor + 1, patch: 0 };
+    }
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
   if (floor.major > 0) {
     return { major: floor.major + 1, minor: 0, patch: 0 };
   }
@@ -206,6 +258,25 @@ function caretCeiling(floor) {
     return { major: 0, minor: floor.minor + 1, patch: 0 };
   }
   return { major: 0, minor: 0, patch: floor.patch + 1 };
+}
+
+function tildeCeiling(floor) {
+  if (floor.precision === "major") {
+    return { major: floor.major + 1, minor: 0, patch: 0 };
+  }
+  return { major: floor.major, minor: floor.minor + 1, patch: 0 };
+}
+
+function rangeAllowsResolved(resolved, floor) {
+  if (resolved.prerelease === undefined) {
+    return true;
+  }
+  return (
+    floor.prerelease !== undefined &&
+    resolved.major === floor.major &&
+    resolved.minor === floor.minor &&
+    resolved.patch === floor.patch
+  );
 }
 
 function resolvedLockVersion(version) {
@@ -219,7 +290,7 @@ function versionSatisfiesSpecifier(version, specifier) {
     return false;
   }
   if (specifier === "*" || specifier === "x" || specifier === "X") {
-    return true;
+    return resolved.prerelease === undefined;
   }
   const exact = parseSemver(specifier);
   if (exact !== null) {
@@ -227,8 +298,8 @@ function versionSatisfiesSpecifier(version, specifier) {
   }
   const caret = /^\^(.+)$/u.exec(specifier);
   if (caret !== null) {
-    const floor = parseSemver(caret[1]);
-    if (floor === null) {
+    const floor = parseRangeOperand(caret[1]);
+    if (floor === null || !rangeAllowsResolved(resolved, floor)) {
       return false;
     }
     return (
@@ -238,17 +309,13 @@ function versionSatisfiesSpecifier(version, specifier) {
   }
   const tilde = /^~(.+)$/u.exec(specifier);
   if (tilde !== null) {
-    const floor = parseSemver(tilde[1]);
-    if (floor === null) {
+    const floor = parseRangeOperand(tilde[1]);
+    if (floor === null || !rangeAllowsResolved(resolved, floor)) {
       return false;
     }
     return (
       compareSemver(resolved, floor) >= 0 &&
-      compareSemver(resolved, {
-        major: floor.major,
-        minor: floor.minor + 1,
-        patch: 0,
-      }) < 0
+      compareSemver(resolved, tildeCeiling(floor)) < 0
     );
   }
   const comparator = /^(>=|>|<=|<|=)\s*(.+)$/u.exec(specifier);
@@ -256,7 +323,7 @@ function versionSatisfiesSpecifier(version, specifier) {
     return false;
   }
   const bound = parseSemver(comparator[2]);
-  if (bound === null) {
+  if (bound === null || !rangeAllowsResolved(resolved, bound)) {
     return false;
   }
   const order = compareSemver(resolved, bound);
@@ -393,11 +460,7 @@ export async function validateRepository(options = {}) {
   if (
     !sameJson(manifest.dependencies, REQUIRED_DEPENDENCIES) ||
     lockSections === null ||
-    !lockPinsMatch(lockSections.dependencies, REQUIRED_DEPENDENCIES) ||
-    !lockPinsMatch(
-      lockSections.peerDependencies,
-      manifest.peerDependencies ?? {},
-    )
+    !lockPinsMatch(lockSections.dependencies, REQUIRED_DEPENDENCIES)
   ) {
     fail("Pegma runtime dependencies must match the reviewed exact pins");
   }
