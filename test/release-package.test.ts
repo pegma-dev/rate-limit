@@ -165,12 +165,18 @@ describe("publish workflow boundaries", () => {
     );
 
     expect(workflow).toContain("include-hidden-files: false");
-    expect(workflow).toContain("manifest-digest:");
+    expect(workflow).toContain("manifest_digest:");
+    expect(workflow).toContain("steps.pack.outputs['manifest-digest']");
+    expect(workflow).toContain("needs.prepare.outputs.manifest_digest");
+    expect(workflow).not.toContain("outputs.manifest-digest");
     expect(workflow).toContain("needs: [prepare, smoke]");
     expect(workflow).toContain("--ignore-scripts");
     expect(workflow).toContain("NPM_CONFIG_USERCONFIG");
     expect(workflow).toContain("NPM_CONFIG_GLOBALCONFIG");
     expect(workflow).toContain("id-token: write");
+    expect(workflow).toContain(
+      "npm install --global npm@11.18.0 --ignore-scripts --registry https://registry.npmjs.org/",
+    );
     for (const key of [
       "COMSPEC",
       "HOMEDRIVE",
@@ -208,6 +214,20 @@ describe("publish workflow boundaries", () => {
     }
 
     expect(runSections.join("\n")).not.toContain("${{");
+  });
+
+  it("keeps step-only contexts out of job environments", async () => {
+    const workflow = await readFile(
+      resolve(".github/workflows/publish.yml"),
+      "utf8",
+    );
+    const jobEnvironments = [
+      ...workflow.matchAll(/^ {4}env:\n((?: {6}.+\n)*)/gmu),
+    ]
+      .map((match) => match[1] ?? "")
+      .join("\n");
+
+    expect(jobEnvironments).not.toMatch(/\$\{\{\s*(?:runner|steps)\./u);
   });
 
   it("runs the release metadata check in CI", async () => {

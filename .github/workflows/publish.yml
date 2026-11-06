@@ -18,7 +18,7 @@ jobs:
   prepare:
     runs-on: ubuntu-latest
     outputs:
-      manifest-digest: ${{ steps.pack.outputs.manifest-digest }}
+      manifest_digest: ${{ steps.pack.outputs['manifest-digest'] }}
     env:
       CI: "1"
       RELEASE_TAG: ${{ github.event.release.tag_name }}
@@ -128,7 +128,6 @@ jobs:
       CI: "1"
       RELEASE_TAG: ${{ github.event.release.tag_name }}
       RELEASE_COMMIT: ${{ github.sha }}
-      ARTIFACT_DIR: ${{ runner.temp }}/rate-limit-release
 
     steps:
       - name: Check out the authenticated commit
@@ -151,6 +150,8 @@ jobs:
           path: ${{ runner.temp }}/rate-limit-release
 
       - name: Import from an isolated consumer
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/rate-limit-release
         run: node scripts/release-package.mjs smoke --manifest "${ARTIFACT_DIR}/package-manifest.json"
 
   publish:
@@ -166,8 +167,7 @@ jobs:
       RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
       RELEASE_COMMIT: ${{ github.sha }}
       RELEASE_ALLOWED_SIGNERS: ${{ vars.RELEASE_ALLOWED_SIGNERS }}
-      MANIFEST_DIGEST: ${{ needs.prepare.outputs.manifest-digest }}
-      ARTIFACT_DIR: ${{ runner.temp }}/rate-limit-release
+      MANIFEST_DIGEST: ${{ needs.prepare.outputs.manifest_digest }}
 
     steps:
       - name: Re-authenticate the release tag
@@ -216,6 +216,9 @@ jobs:
           node-version: 24.18.0
           package-manager-cache: false
 
+      - name: Use the reviewed npm release
+        run: npm install --global npm@11.18.0 --ignore-scripts --registry https://registry.npmjs.org/
+
       - name: Download the prepared release
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -224,6 +227,8 @@ jobs:
 
       - name: Verify and publish the prepared tarball
         shell: bash
+        env:
+          ARTIFACT_DIR: ${{ runner.temp }}/rate-limit-release
         run: |
           set -euo pipefail
           node <<'NODE'
