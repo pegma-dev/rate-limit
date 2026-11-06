@@ -35,13 +35,19 @@ records, and malformed time all fail closed with a millisecond
 `retryAfter`. Its sweep uses version-conditional deletes.
 
 Policy names and limiter keys are host-owned opaque strings, but they must be
-primitive and non-blank. Whitespace is preserved once that validation passes.
-Ill-formed Unicode is rejected so UTF-8 hashing remains injective before the
-cryptographic digest.
+primitive and non-blank. Keys are limited to 512 UTF-16 code units before
+either tier scans or hashes them. Whitespace is preserved once validation
+passes. Ill-formed Unicode is rejected so UTF-8 hashing remains injective
+before the cryptographic digest.
 The durable tier stores only domain-separated SHA-256 hashes of those values,
 not the raw inputs, keeping entity sizes bounded. These deterministic hashes
 are pseudonymous, not anonymous: predictable inputs can still be guessed, and
 the same key remains linkable within one policy.
+
+Durable storage binds each policy name to its initial `limit` and `windowMs`.
+Conflicting instances fail closed; rolling configuration changes use a
+versioned policy name or a coordinated store reset. Sweeps retain ended windows
+for a configurable clock-skew grace, 60 seconds by default.
 
 Fixed windows have a documented edge: a burst crossing a boundary can briefly
 admit nearly twice the configured limit. This package does not claim to be

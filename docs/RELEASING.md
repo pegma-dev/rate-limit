@@ -10,14 +10,24 @@ npm could not configure a trusted publisher until `@pegma/rate-limit` existed.
 The release tool verifies the exact public workspace inventory, stable package
 version, exact Pegma dependency pins, matching lockfile, package metadata,
 README and LICENSE, prepack build, test exclusion, dist-only allowlist, and
-exports. Packing builds once, checks the complete file inventory and hashes,
-and imports every export from a clean consumer installation.
+exports. Preparation builds once and checks the complete file inventory and
+hashes; the separate smoke job imports every export from a clean consumer
+installation.
 
 The prepared `package-manifest.json` records the source commit, optional
-release tag, tarball filename, SHA-1, SHA-512 integrity, and packed files.
+release tag, tarball filename, SHA-256, SHA-512 integrity, and packed files.
 `release:registry:check` revalidates those local bytes before comparing their
 exact integrity with npm. Only npm `E404` means `absent`; an existing different
 artifact or another registry failure stops the ceremony.
+
+Normal preparation authenticates the stable signed tag in a temporary bare
+repository before checkout. The resulting artifact contains exactly two
+regular files: the manifest and its named tarball. Consumer installation runs
+in a separate job without publication authority. The environment-protected
+OIDC job checks the tag again, downloads the sealed artifact outside a source
+checkout, verifies the preparation manifest digest and both tarball digests,
+and invokes npm from a fresh directory with empty configuration files and an
+allowlisted environment. It never executes repository code.
 
 ## One-time `0.0.0` package-name bootstrap
 
@@ -157,10 +167,12 @@ gh release create v0.1.0 --verify-tag --title "v0.1.0"
 ```
 
 The unprivileged preparation job checks the signed tag, release-event commit,
-main ancestry, full gate, tarball inventory, imports, and hashes. Only the
-environment-scoped publish job receives OIDC authority; it installs no
-dependencies and publishes the downloaded prepared artifact with provenance.
-Re-running is safe only when npm reports the same integrity.
+main ancestry, full gate, tarball inventory, and hashes. A second unprivileged
+job imports the sealed tarball from a clean consumer installation. Only the
+environment-scoped publish job receives OIDC authority; it checks the tag and
+artifact again, installs no dependencies, and publishes the downloaded
+prepared artifact with provenance. Re-running is safe only when npm reports
+the same integrity.
 
 After publication, select the one successful `publish.yml` release run for
 the exact signed tag commit, confirm the run names that tag and commit, and

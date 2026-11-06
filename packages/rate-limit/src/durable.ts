@@ -19,28 +19,36 @@ import {
 } from "./policy.js";
 
 const COLLECTION_NAME = "rate-limit-windows";
+const POLICY_DESCRIPTOR_ID = "policy";
+const DEFAULT_MAX_CLOCK_SKEW_MS = 60_000;
 
-interface StoredWindow {
+interface StoredRateLimitRecord {
   readonly partition: StoredValue;
   readonly id: StoredValue;
+  readonly kind: StoredValue;
   readonly policyHash: StoredValue;
   readonly subjectHash: StoredValue;
   readonly windowStartMs: StoredValue;
   readonly count: StoredValue;
+  readonly limit: StoredValue;
+  readonly windowMs: StoredValue;
 }
 
 interface ValidWindow {
   readonly partition: string;
   readonly id: string;
+  readonly kind: "window";
   readonly policyHash: string;
   readonly subjectHash: string;
   readonly windowStartMs: number;
   readonly count: number;
+  readonly limit: number;
+  readonly windowMs: number;
 }
 
 type WindowIdentity = Omit<ValidWindow, "count">;
 
-const windows = defineCollection<StoredWindow>({
+const records = defineCollection<StoredRateLimitRecord>({
   name: COLLECTION_NAME,
   key: (value) => ({
     partition: String(value.partition),
@@ -51,10 +59,13 @@ const windows = defineCollection<StoredWindow>({
     decode: (record) => ({
       partition: record.partition ?? null,
       id: record.id ?? null,
+      kind: record.kind ?? null,
       policyHash: record.policyHash ?? null,
       subjectHash: record.subjectHash ?? null,
       windowStartMs: record.windowStartMs ?? null,
       count: record.count ?? null,
+      limit: record.limit ?? null,
+      windowMs: record.windowMs ?? null,
     }),
   },
 });
@@ -62,6 +73,11 @@ const windows = defineCollection<StoredWindow>({
 export interface DurableLimiterOptions extends LimiterOptions {
   /** Total optimistic-concurrency attempts. Defaults to 3. */
   readonly maxAttempts?: number;
+  /**
+   * Retention grace added after each fixed window. Defaults to 60 seconds so
+   * a moderately fast peer clock cannot sweep a slower peer's active window.
+   */
+  readonly maxClockSkewMs?: number;
 }
 
 export interface SweepResult {
@@ -117,8 +133,9 @@ function idFor(windowStartMs: number, subjectHash: string): string {
 
 const SHA_256_HEX = /^[0-9a-f]{64}$/u;
 
-function validWindow(value: StoredWindow): ValidWindow | null {
-  return typeof value.partition === "string" &&
+function validWindow(value: StoredRateLimitRecord): ValidWindow | null {
+  return value.kind === "window" &&
+    typeof value.partition === "string" &&
     /^policy-[0-9a-f]{64}$/u.test(value.partition) &&
     typeof value.id === "string" &&
     value.id.length > 0 &&
@@ -130,37 +147,91 @@ function validWindow(value: StoredWindow): ValidWindow | null {
     Number.isSafeInteger(value.windowStartMs) &&
     typeof value.count === "number" &&
     Number.isSafeInteger(value.count) &&
-    value.count > 0
+    value.count > 0 &&
+    typeof value.limit === "number" &&
+    Number.isSafeInteger(value.limit) &&
+    value.limit > 0 &&
+    typeof value.windowMs === "number" &&
+    Number.isSafeInteger(value.windowMs) &&
+    value.windowMs > 0
     ? (value as ValidWindow)
     : null;
 }
 
-function sweepIdentity(
-  value: StoredWindow,
+function windowMatches(
+  value: StoredRateLimitRecord,
   expected: PartitionIdentity,
+  policy: RateLimitPolicy,
+  subjectHash: string,
+  windowStartMs: number,
+): ValidWindow | null {
+  const valid = validWindow(value);
+  const id = idFor(windowStartMs, subjectHash);
+  return valid !== null &&
+    valid.partition === expected.partition &&
+    valid.id === id &&
+    valid.policyHash === expected.policyHash &&
+    valid.subjectHash === subjectHash &&
+    valid.windowStartMs === windowStartMs &&
+    valid.limit === policy.limit &&
+    valid.windowMs === policy.windowMs
+    ? valid
+    : null;
+}
+
+function descriptorMatches(
+  value: StoredRateLimitRecord,
+  expected: PartitionIdentity,
+  policy: RateLimitPolicy,
+): boolean {
+  return (
+    value.kind === "policy" &&
+    value.partition === expected.partition &&
+    value.id === POLICY_DESCRIPTOR_ID &&
+    value.policyHash === expected.policyHash &&
+    value.subjectHash === null &&
+    value.windowStartMs === null &&
+    value.count === null &&
+    value.limit === policy.limit &&
+    value.windowMs === policy.windowMs
+  );
+}
+
+function descriptorValue(
+  expected: PartitionIdentity,
+  policy: RateLimitPolicy,
+): StoredRateLimitRecord {
+  return {
+    partition: expected.partition,
+    id: POLICY_DESCRIPTOR_ID,
+    kind: "policy",
+    policyHash: expected.policyHash,
+    subjectHash: null,
+    windowStartMs: null,
+    count: null,
+    limit: policy.limit,
+    windowMs: policy.windowMs,
+  };
+}
+
+function sweepIdentity(
+  value: StoredRateLimitRecord,
+  expected: PartitionIdentity,
+  policy: RateLimitPolicy,
 ): WindowIdentity | null {
+  const valid = validWindow(value);
   if (
-    typeof value.partition !== "string" ||
-    value.partition !== expected.partition ||
-    typeof value.id !== "string" ||
-    value.id.length === 0 ||
-    typeof value.policyHash !== "string" ||
-    value.policyHash !== expected.policyHash ||
-    typeof value.subjectHash !== "string" ||
-    !SHA_256_HEX.test(value.subjectHash) ||
-    typeof value.windowStartMs !== "number" ||
-    !Number.isSafeInteger(value.windowStartMs) ||
-    value.id !== idFor(value.windowStartMs, value.subjectHash)
+    valid === null ||
+    valid.partition !== expected.partition ||
+    valid.policyHash !== expected.policyHash ||
+    valid.id !== idFor(valid.windowStartMs, valid.subjectHash) ||
+    valid.limit !== policy.limit ||
+    valid.windowMs !== policy.windowMs
   ) {
     return null;
   }
-  return {
-    partition: value.partition,
-    id: value.id,
-    policyHash: value.policyHash,
-    subjectHash: value.subjectHash,
-    windowStartMs: value.windowStartMs,
-  };
+  const { count: _count, ...identity } = valid;
+  return identity;
 }
 
 function assertMaxAttempts(value: number): number {
@@ -170,13 +241,21 @@ function assertMaxAttempts(value: number): number {
   return value;
 }
 
+function assertMaxClockSkewMs(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new TypeError("maxClockSkewMs must be a non-negative integer.");
+  }
+  return value;
+}
+
 /**
  * Creates a shared, fixed-window limiter over an injected Store.
  *
- * This tier pays for one storage update per allowed check. A fixed window can
- * admit nearly twice the limit across a boundary; it is intended for
- * low-rate, expensive or abuse-critical operations, not hot cheap endpoints.
- * Storage failures and exhausted contention retries deny rather than throw.
+ * This tier pays for one storage update per allowed check after its immutable
+ * policy descriptor is validated. A fixed window can admit nearly twice the
+ * limit across a boundary; it is intended for low-rate, expensive or
+ * abuse-critical operations, not hot cheap endpoints. Storage failures and
+ * exhausted contention retries deny rather than throw.
  */
 export function createDurableLimiter(
   inputPolicy: RateLimitPolicy,
@@ -186,8 +265,12 @@ export function createDurableLimiter(
   const policy = defineRateLimitPolicy(inputPolicy);
   const clock = options.clock ?? systemClock;
   const maxAttempts = assertMaxAttempts(options.maxAttempts ?? 3);
-  const collection = store.collection(windows);
+  const maxClockSkewMs = assertMaxClockSkewMs(
+    options.maxClockSkewMs ?? DEFAULT_MAX_CLOCK_SKEW_MS,
+  );
+  const collection = store.collection(records);
   let partitionPromise: Promise<PartitionIdentity> | undefined;
+  let descriptorValidated = false;
 
   function getPartition(): Promise<PartitionIdentity> {
     // Start hashing only inside allow/sweep, where fail-closed handling
@@ -195,6 +278,61 @@ export function createDurableLimiter(
     // digest promise unhandled before the limiter is first used.
     partitionPromise ??= partitionFor(policy);
     return partitionPromise;
+  }
+
+  async function ensureDescriptor(
+    expected: PartitionIdentity,
+    create: boolean,
+  ): Promise<boolean> {
+    if (descriptorValidated) {
+      return true;
+    }
+    let matches = false;
+    await collection.update(
+      { partition: expected.partition, id: POLICY_DESCRIPTOR_ID },
+      (current) => {
+        if (current === null) {
+          matches = create;
+          return create
+            ? { action: "write", value: descriptorValue(expected, policy) }
+            : { action: "keep" };
+        }
+        matches = descriptorMatches(current, expected, policy);
+        return { action: "keep" };
+      },
+      { maxAttempts },
+    );
+    if (matches) {
+      descriptorValidated = true;
+    }
+    return matches;
+  }
+
+  async function preflightRefuses(
+    expected: PartitionIdentity,
+    subjectHash: string,
+    windowStartMs: number,
+  ): Promise<boolean> {
+    let refuses = false;
+    const id = idFor(windowStartMs, subjectHash);
+    await collection.update(
+      { partition: expected.partition, id },
+      (current) => {
+        if (current !== null) {
+          const valid = windowMatches(
+            current,
+            expected,
+            policy,
+            subjectHash,
+            windowStartMs,
+          );
+          refuses = valid === null || valid.count >= policy.limit;
+        }
+        return { action: "keep" };
+      },
+      { maxAttempts },
+    );
+    return refuses;
   }
 
   return {
@@ -209,37 +347,57 @@ export function createDurableLimiter(
       let deciderAllowed = false;
 
       try {
-        const { partition, policyHash } = await getPartition();
-        const subjectHash = await subjectHashFor(policyHash, key);
+        const expected = await getPartition();
+        const subjectHash = await subjectHashFor(expected.policyHash, key);
         const id = idFor(windowStartMs, subjectHash);
+
+        if (!descriptorValidated) {
+          // A fresh limiter checks the counter first. If it is already at its
+          // boundary, refusal returns after a keep decision and does not write
+          // a missing descriptor or any other record.
+          if (await preflightRefuses(expected, subjectHash, windowStartMs)) {
+            return {
+              allowed: false,
+              retryAfter: retryAfter(windowEndsAt, now),
+            };
+          }
+          if (!(await ensureDescriptor(expected, true))) {
+            return {
+              allowed: false,
+              retryAfter: retryAfter(windowEndsAt, now),
+            };
+          }
+        }
+
         const result = await collection.update(
-          { partition, id },
+          { partition: expected.partition, id },
           (current) => {
             if (current === null) {
               deciderAllowed = true;
               return {
                 action: "write",
                 value: {
-                  partition,
+                  partition: expected.partition,
                   id,
-                  policyHash,
+                  kind: "window",
+                  policyHash: expected.policyHash,
                   subjectHash,
                   windowStartMs,
                   count: 1,
+                  limit: policy.limit,
+                  windowMs: policy.windowMs,
                 },
               };
             }
 
-            const valid = validWindow(current);
-            if (
-              valid === null ||
-              valid.partition !== partition ||
-              valid.id !== id ||
-              valid.policyHash !== policyHash ||
-              valid.subjectHash !== subjectHash ||
-              valid.windowStartMs !== windowStartMs ||
-              valid.count >= policy.limit
-            ) {
+            const valid = windowMatches(
+              current,
+              expected,
+              policy,
+              subjectHash,
+              windowStartMs,
+            );
+            if (valid === null || valid.count >= policy.limit) {
               deciderAllowed = false;
               return { action: "keep" };
             }
@@ -276,14 +434,20 @@ export function createDurableLimiter(
       let rows;
       try {
         expected = await getPartition();
+        if (!(await ensureDescriptor(expected, false))) {
+          return { scanned: 0, deleted: 0 };
+        }
         rows = await collection.listVersioned(expected.partition);
       } catch {
         return { scanned: 0, deleted: 0 };
       }
 
+      const candidates = rows.filter(
+        ({ value }) => value.id !== POLICY_DESCRIPTOR_ID,
+      );
       let deleted = 0;
-      for (const row of rows) {
-        const identity = sweepIdentity(row.value, expected);
+      for (const row of candidates) {
+        const identity = sweepIdentity(row.value, expected, policy);
         if (identity === null) {
           // CollectionStore.listVersioned does not expose the actual row key.
           // Reconstructing one from malformed identity fields could pair this
@@ -291,14 +455,9 @@ export function createDurableLimiter(
           // safe choice.
           continue;
         }
-        const countIsMalformed =
-          typeof row.value.count !== "number" ||
-          !Number.isSafeInteger(row.value.count) ||
-          row.value.count <= 0;
-        if (
-          countIsMalformed ||
-          identity.windowStartMs + policy.windowMs > now
-        ) {
+        const expiresAt =
+          identity.windowStartMs + policy.windowMs + maxClockSkewMs;
+        if (!Number.isSafeInteger(expiresAt) || expiresAt > now) {
           continue;
         }
         try {
@@ -316,7 +475,7 @@ export function createDurableLimiter(
           // A sweep is hygiene; a failed delete leaves the record for later.
         }
       }
-      return { scanned: rows.length, deleted };
+      return { scanned: candidates.length, deleted };
     },
   };
 }

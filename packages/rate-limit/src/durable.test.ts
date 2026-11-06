@@ -45,6 +45,38 @@ function stores(): Array<[string, () => Store]> {
   ];
 }
 
+function trackStore(inner: Store): {
+  readonly store: Store;
+  readonly writes: () => number;
+  readonly deletes: () => number;
+} {
+  let writes = 0;
+  let deletes = 0;
+  return {
+    store: {
+      collection<T>(definition: CollectionDefinition<T>): CollectionStore<T> {
+        const collection = inner.collection(definition);
+        return {
+          ...collection,
+          async update(key, decide, options) {
+            const result = await collection.update(key, decide, options);
+            if (result.written) {
+              writes += 1;
+            }
+            return result;
+          },
+          async deleteIfUnchanged(key, version) {
+            deletes += 1;
+            return collection.deleteIfUnchanged(key, version);
+          },
+        };
+      },
+    },
+    writes: () => writes,
+    deletes: () => deletes,
+  };
+}
+
 describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
   it("allows through the limit and makes later refusals read-only", async () => {
     let writes = 0;
@@ -81,12 +113,12 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
     await expect(limiter.allow("alice", start)).resolves.toEqual({
       allowed: true,
     });
-    expect(writes).toBe(3);
+    expect(writes).toBe(4);
     await expect(limiter.allow("alice", start)).resolves.toEqual({
       allowed: false,
       retryAfter: 60_000,
     });
-    expect(writes).toBe(3);
+    expect(writes).toBe(4);
   });
 
   it("keeps policies and opaque keys independent", async () => {
@@ -108,7 +140,7 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
     });
   });
 
-  it("hashes long opaque policy names and keys into backend-safe identifiers", async () => {
+  it("hashes bounded opaque policy names and keys into backend-safe identifiers", async () => {
     const limiter = createDurableLimiter(
       {
         name: `long-policy-${"p".repeat(2_000)}`,
@@ -119,7 +151,7 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
     );
 
     await expect(
-      limiter.allow(`long-key-${"k".repeat(2_000)}`, start),
+      limiter.allow(`long-key-${"k".repeat(500)}`, start),
     ).resolves.toEqual({
       allowed: true,
     });
@@ -138,9 +170,122 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
       limiter.allow("live", "2026-01-01T00:02:30.000Z"),
     ).resolves.toEqual({ allowed: true });
   });
+
+  it("retains an exhausted window while peer clocks straddle its boundary", async () => {
+    const store = makeStore();
+    const sharedPolicy = {
+      name: "clock-boundary",
+      limit: 1,
+      windowMs: 60_000,
+    } as const;
+    const slower = createDurableLimiter(sharedPolicy, store, {
+      clock: { now: () => "2026-01-01T00:00:59.500Z" },
+    });
+    const faster = createDurableLimiter(sharedPolicy, store, {
+      clock: { now: () => "2026-01-01T00:01:00.500Z" },
+    });
+
+    await expect(slower.allow("shared-subject")).resolves.toEqual({
+      allowed: true,
+    });
+    await expect(faster.sweep()).resolves.toEqual({ scanned: 1, deleted: 0 });
+    await expect(slower.allow("shared-subject")).resolves.toEqual({
+      allowed: false,
+      retryAfter: 500,
+    });
+  });
+
+  it("fails closed for conflicting policy semantics without refusal writes", async () => {
+    const tracked = trackStore(makeStore());
+    const base = createDurableLimiter(
+      { name: "shared-policy", limit: 1, windowMs: 60_000 },
+      tracked.store,
+    );
+    await expect(base.allow("subject", start)).resolves.toEqual({
+      allowed: true,
+    });
+    const initialWrites = tracked.writes();
+
+    const freshMatch = createDurableLimiter(
+      { name: "shared-policy", limit: 1, windowMs: 60_000 },
+      tracked.store,
+    );
+    await expect(freshMatch.allow("subject", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 60_000,
+    });
+    expect(tracked.writes()).toBe(initialWrites);
+
+    const conflictingLimit = createDurableLimiter(
+      { name: "shared-policy", limit: 2, windowMs: 60_000 },
+      tracked.store,
+    );
+    await expect(conflictingLimit.allow("subject", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 60_000,
+    });
+
+    const conflictingWindow = createDurableLimiter(
+      { name: "shared-policy", limit: 1, windowMs: 120_000 },
+      tracked.store,
+    );
+    await expect(conflictingWindow.allow("subject", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 120_000,
+    });
+    await expect(
+      conflictingWindow.sweep("2026-01-01T00:10:00.000Z"),
+    ).resolves.toEqual({ scanned: 0, deleted: 0 });
+    expect(tracked.writes()).toBe(initialWrites);
+    expect(tracked.deletes()).toBe(0);
+  });
+
+  it("rejects oversized keys before hashing or storage operations", async () => {
+    let operations = 0;
+    const inner = makeStore();
+    const tracking: Store = {
+      collection<T>(definition: CollectionDefinition<T>): CollectionStore<T> {
+        const collection = inner.collection(definition);
+        return {
+          ...collection,
+          async update(key, decide, options) {
+            operations += 1;
+            return collection.update(key, decide, options);
+          },
+          async listVersioned(partition: string) {
+            operations += 1;
+            return collection.listVersioned(partition);
+          },
+          async deleteIfUnchanged(key, version) {
+            operations += 1;
+            return collection.deleteIfUnchanged(key, version);
+          },
+        };
+      },
+    };
+    const digest = vi.spyOn(crypto.subtle, "digest");
+    try {
+      await expect(
+        createDurableLimiter(policy, tracking).allow("k".repeat(513), start),
+      ).rejects.toThrow("at most 512 UTF-16 code units");
+      expect(digest).not.toHaveBeenCalled();
+      expect(operations).toBe(0);
+    } finally {
+      digest.mockRestore();
+    }
+  });
 });
 
 describe("durable failure and contention behavior", () => {
+  it.each([-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid maxClockSkewMs %#",
+    (maxClockSkewMs) => {
+      expect(() =>
+        createDurableLimiter(policy, createMemoryStore(), { maxClockSkewMs }),
+      ).toThrow("maxClockSkewMs");
+    },
+  );
+
   it("starts hashing lazily and handles digest rejection before it can become unhandled", async () => {
     let digestCalls = 0;
     const unhandled: unknown[] = [];
@@ -178,22 +323,33 @@ describe("durable failure and contention behavior", () => {
 
   it("stores only bounded domain-separated hashes, never raw policy names or keys", async () => {
     let stored: unknown;
+    const inner = createMemoryStore();
     const store: Store = {
-      collection<T>(): CollectionStore<T> {
+      collection<T>(definition: CollectionDefinition<T>): CollectionStore<T> {
+        const collection = inner.collection(definition);
         return {
-          async update(_key: EntityKey, decide: UpdateDecider<T>) {
-            const decision = await decide(null);
-            if (decision.action !== "write") {
-              throw new Error("expected a counter write");
-            }
-            stored = decision.value;
-            return { written: true, value: decision.value, attempts: 1 };
+          ...collection,
+          async update(key, decide: UpdateDecider<T>, options) {
+            return collection.update(
+              key,
+              async (current) => {
+                const decision = await decide(current);
+                if (
+                  decision.action === "write" &&
+                  (decision.value as Record<string, unknown>).kind === "window"
+                ) {
+                  stored = decision.value;
+                }
+                return decision;
+              },
+              options,
+            );
           },
-        } as unknown as CollectionStore<T>;
+        };
       },
     };
     const rawPolicy = `private-policy-${"p".repeat(2_000)}`;
-    const rawKey = `person@example.test-${"k".repeat(2_000)}`;
+    const rawKey = `person@example.test-${"k".repeat(400)}`;
     const limiter = createDurableLimiter(
       { name: rawPolicy, limit: 1, windowMs: 60_000 },
       store,
@@ -205,13 +361,16 @@ describe("durable failure and contention behavior", () => {
     const serialized = JSON.stringify(stored);
     expect(serialized).not.toContain(rawPolicy);
     expect(serialized).not.toContain(rawKey);
-    expect(serialized.length).toBeLessThan(400);
+    expect(serialized.length).toBeLessThan(450);
     expect(stored).toMatchObject({
+      kind: "window",
       policyHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
       subjectHash: expect.stringMatching(/^[0-9a-f]{64}$/u),
       partition: expect.stringMatching(/^policy-[0-9a-f]{64}$/u),
       id: expect.stringMatching(/^\d{13}-[0-9a-f]{64}$/u),
       count: 1,
+      limit: 1,
+      windowMs: 60_000,
     });
     expect(stored).not.toHaveProperty("policyName");
     expect(stored).not.toHaveProperty("subjectKey");
@@ -219,18 +378,29 @@ describe("durable failure and contention behavior", () => {
 
   it("scopes a subject hash to its policy", async () => {
     const stored: Array<Record<string, unknown>> = [];
+    const inner = createMemoryStore();
     const store: Store = {
-      collection<T>(): CollectionStore<T> {
+      collection<T>(definition: CollectionDefinition<T>): CollectionStore<T> {
+        const collection = inner.collection(definition);
         return {
-          async update(_key: EntityKey, decide: UpdateDecider<T>) {
-            const decision = await decide(null);
-            if (decision.action !== "write") {
-              throw new Error("expected a counter write");
-            }
-            stored.push(decision.value as Record<string, unknown>);
-            return { written: true, value: decision.value, attempts: 1 };
+          ...collection,
+          async update(key, decide: UpdateDecider<T>, options) {
+            return collection.update(
+              key,
+              async (current) => {
+                const decision = await decide(current);
+                if (
+                  decision.action === "write" &&
+                  (decision.value as Record<string, unknown>).kind === "window"
+                ) {
+                  stored.push(decision.value as Record<string, unknown>);
+                }
+                return decision;
+              },
+              options,
+            );
           },
-        } as unknown as CollectionStore<T>;
+        };
       },
     };
 
@@ -410,7 +580,10 @@ describe("durable failure and contention behavior", () => {
           ...collection,
           async listVersioned(partition) {
             const listed = await collection.listVersioned(partition);
-            const first = listed[0];
+            const first = listed.find(({ value }) => {
+              const record = value as Record<string, unknown>;
+              return record.kind === "window";
+            });
             if (first !== undefined) {
               await collection.update(
                 definition.key(first.value),
@@ -451,6 +624,25 @@ describe("durable failure and contention behavior", () => {
     const store: Store = {
       collection<T>(): CollectionStore<T> {
         return {
+          async update(key: EntityKey, decide: UpdateDecider<T>) {
+            const descriptor = {
+              partition: key.partition,
+              id: "policy",
+              kind: "policy",
+              policyHash: key.partition.slice("policy-".length),
+              subjectHash: null,
+              windowStartMs: null,
+              count: null,
+              limit: policy.limit,
+              windowMs: policy.windowMs,
+            } as T;
+            await decide(descriptor);
+            return {
+              written: false,
+              value: descriptor,
+              attempts: 1,
+            };
+          },
           async listVersioned() {
             return [
               {
@@ -482,31 +674,22 @@ describe("durable failure and contention behavior", () => {
 
   it("retains count-malformed records rather than pairing their version with a victim key", async () => {
     let conditionalDeleteCalled = false;
+    const inner = createMemoryStore();
     const store: Store = {
-      collection<T>(): CollectionStore<T> {
-        let stored: T | undefined;
+      collection<T>(definition: CollectionDefinition<T>): CollectionStore<T> {
+        const collection = inner.collection(definition);
         return {
-          async update(_key: EntityKey, decide: UpdateDecider<T>) {
-            const decision = await decide(null);
-            if (decision.action !== "write") {
-              throw new Error("expected the initial counter write");
-            }
-            stored = decision.value;
-            return { written: true, value: stored, attempts: 1 };
-          },
-          async listVersioned() {
-            if (stored === undefined) {
-              return [];
-            }
-            return [
-              {
-                value: {
-                  ...(stored as Record<string, unknown>),
-                  count: 0,
-                } as T,
-                version: "version-shared-by-another-key",
-              },
-            ];
+          ...collection,
+          async listVersioned(partition: string) {
+            return (await collection.listVersioned(partition)).map((row) => {
+              const value = row.value as Record<string, unknown>;
+              return value.kind === "window"
+                ? {
+                    ...row,
+                    value: { ...value, count: 0 } as T,
+                  }
+                : row;
+            });
           },
           async deleteIfUnchanged() {
             conditionalDeleteCalled = true;

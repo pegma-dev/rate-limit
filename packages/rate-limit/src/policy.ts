@@ -30,6 +30,9 @@ export interface LimiterOptions {
   readonly clock?: Clock;
 }
 
+/** Maximum opaque subject-key length, measured in UTF-16 code units. */
+export const MAX_RATE_LIMIT_KEY_LENGTH = 512;
+
 function isWellFormedUnicode(value: string): boolean {
   for (let index = 0; index < value.length; index += 1) {
     const codeUnit = value.charCodeAt(index);
@@ -78,6 +81,13 @@ export function defineRateLimitPolicy(
 }
 
 export function assertRateLimitKey(key: string): void {
+  // Deliberately precedes trimming, Unicode validation, hashing, and storage
+  // key interpolation so oversized input is rejected in constant time.
+  if (typeof key === "string" && key.length > MAX_RATE_LIMIT_KEY_LENGTH) {
+    throw new TypeError(
+      `A rate-limit key must be at most ${MAX_RATE_LIMIT_KEY_LENGTH} UTF-16 code units.`,
+    );
+  }
   if (typeof key !== "string" || key.trim().length === 0) {
     throw new TypeError("A rate-limit key must be a non-blank string.");
   }
