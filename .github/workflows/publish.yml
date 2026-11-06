@@ -385,13 +385,20 @@ jobs:
 
           const keep = new Set([
             "CI",
+            "COMSPEC",
             "HOME",
+            "HOMEDRIVE",
+            "HOMEPATH",
             "PATH",
+            "PATHEXT",
             "RUNNER_TEMP",
+            "SYSTEMDRIVE",
             "SYSTEMROOT",
             "TEMP",
             "TMP",
             "TMPDIR",
+            "USERPROFILE",
+            "WINDIR",
           ]);
           const npmEnvironment = {};
           for (const [key, value] of Object.entries(process.env)) {

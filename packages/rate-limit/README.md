@@ -98,9 +98,10 @@ linkable within a policy.
 
 Each policy partition also has an immutable descriptor binding its hashed name
 to `limit` and `windowMs`, and every counter repeats those two values. A limiter
-with conflicting settings fails closed without rewriting the descriptor or
-counter. Change either setting under a versioned policy name during a rolling
-deployment, or coordinate a store reset before reusing the name.
+revalidates the descriptor before counter writes and sweeps. Missing or
+conflicting settings fail closed without rewriting the descriptor or counter.
+Change either setting under a versioned policy name during a rolling deployment,
+or coordinate a store reset before reusing the name.
 
 The durable tier uses fixed windows. A burst across a boundary can briefly
 admit nearly twice the limit. It also puts shared-storage latency on every

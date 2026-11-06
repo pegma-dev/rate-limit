@@ -171,6 +171,17 @@ describe("publish workflow boundaries", () => {
     expect(workflow).toContain("NPM_CONFIG_USERCONFIG");
     expect(workflow).toContain("NPM_CONFIG_GLOBALCONFIG");
     expect(workflow).toContain("id-token: write");
+    for (const key of [
+      "COMSPEC",
+      "HOMEDRIVE",
+      "HOMEPATH",
+      "PATHEXT",
+      "SYSTEMDRIVE",
+      "USERPROFILE",
+      "WINDIR",
+    ]) {
+      expect(workflow).toContain(`"${key}"`);
+    }
   });
 
   it("keeps GitHub expressions out of run scripts", async () => {
@@ -205,5 +216,12 @@ describe("publish workflow boundaries", () => {
       "utf8",
     );
     expect(workflow).toContain("pnpm run release:check");
+    expect(workflow.match(/corepack enable/gu)).toHaveLength(1);
+  });
+
+  it("uses deterministic LF line endings", async () => {
+    await expect(readFile(resolve(".gitattributes"), "utf8")).resolves.toBe(
+      "* text=auto eol=lf\n",
+    );
   });
 });

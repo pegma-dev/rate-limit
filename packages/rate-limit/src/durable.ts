@@ -251,8 +251,8 @@ function assertMaxClockSkewMs(value: number): number {
 /**
  * Creates a shared, fixed-window limiter over an injected Store.
  *
- * This tier pays for one storage update per allowed check after its immutable
- * policy descriptor is validated. A fixed window can admit nearly twice the
+ * This tier revalidates its immutable policy descriptor and pays for one
+ * counter write per allowed check. A fixed window can admit nearly twice the
  * limit across a boundary; it is intended for low-rate, expensive or
  * abuse-critical operations, not hot cheap endpoints. Storage failures and
  * exhausted contention retries deny rather than throw.
@@ -270,7 +270,7 @@ export function createDurableLimiter(
   );
   const collection = store.collection(records);
   let partitionPromise: Promise<PartitionIdentity> | undefined;
-  let descriptorValidated = false;
+  let descriptorEstablished = false;
 
   function getPartition(): Promise<PartitionIdentity> {
     // Start hashing only inside allow/sweep, where fail-closed handling
@@ -284,26 +284,26 @@ export function createDurableLimiter(
     expected: PartitionIdentity,
     create: boolean,
   ): Promise<boolean> {
-    if (descriptorValidated) {
-      return true;
-    }
     let matches = false;
+    let observed = false;
     await collection.update(
       { partition: expected.partition, id: POLICY_DESCRIPTOR_ID },
       (current) => {
         if (current === null) {
           matches = create;
+          observed = create;
           return create
             ? { action: "write", value: descriptorValue(expected, policy) }
             : { action: "keep" };
         }
+        observed = true;
         matches = descriptorMatches(current, expected, policy);
         return { action: "keep" };
       },
       { maxAttempts },
     );
-    if (matches) {
-      descriptorValidated = true;
+    if (observed) {
+      descriptorEstablished = true;
     }
     return matches;
   }
@@ -350,8 +350,9 @@ export function createDurableLimiter(
         const expected = await getPartition();
         const subjectHash = await subjectHashFor(expected.policyHash, key);
         const id = idFor(windowStartMs, subjectHash);
+        let createDescriptor = false;
 
-        if (!descriptorValidated) {
+        if (!descriptorEstablished) {
           // A fresh limiter checks the counter first. If it is already at its
           // boundary, refusal returns after a keep decision and does not write
           // a missing descriptor or any other record.
@@ -361,12 +362,26 @@ export function createDurableLimiter(
               retryAfter: retryAfter(windowEndsAt, now),
             };
           }
-          if (!(await ensureDescriptor(expected, true))) {
+          const rows = await collection.listVersioned(expected.partition);
+          const hasDescriptor = rows.some(
+            ({ value }) => value.id === POLICY_DESCRIPTOR_ID,
+          );
+          if (!hasDescriptor && rows.length > 0) {
             return {
               allowed: false,
               retryAfter: retryAfter(windowEndsAt, now),
             };
           }
+          createDescriptor = !hasDescriptor;
+        }
+        // Revalidate the descriptor before every counter write. Once this
+        // instance has observed a descriptor, a later absence fails closed
+        // instead of silently recreating state after a coordinated reset.
+        if (!(await ensureDescriptor(expected, createDescriptor))) {
+          return {
+            allowed: false,
+            retryAfter: retryAfter(windowEndsAt, now),
+          };
         }
 
         const result = await collection.update(

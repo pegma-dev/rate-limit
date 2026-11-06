@@ -77,6 +77,45 @@ function trackStore(inner: Store): {
   };
 }
 
+function resettableStore(inner: Store): {
+  readonly store: Store;
+  readonly removeDescriptor: () => Promise<void>;
+} {
+  let removeDescriptor: (() => Promise<void>) | undefined;
+  return {
+    store: {
+      collection<T>(definition: CollectionDefinition<T>): CollectionStore<T> {
+        const collection = inner.collection(definition);
+        return {
+          ...collection,
+          async update(key, decide, options) {
+            if (key.id === "policy") {
+              removeDescriptor = async () => {
+                const rows = await collection.listVersioned(key.partition);
+                const descriptor = rows.find(
+                  ({ value }) =>
+                    (value as Record<string, unknown>).id === "policy",
+                );
+                if (descriptor === undefined) {
+                  throw new Error("policy descriptor is missing");
+                }
+                await collection.deleteIfUnchanged(key, descriptor.version);
+              };
+            }
+            return collection.update(key, decide, options);
+          },
+        };
+      },
+    },
+    async removeDescriptor() {
+      if (removeDescriptor === undefined) {
+        throw new Error("policy descriptor was not initialized");
+      }
+      await removeDescriptor();
+    },
+  };
+}
+
 describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
   it("allows through the limit and makes later refusals read-only", async () => {
     let writes = 0;
@@ -238,6 +277,40 @@ describe.each(stores())("createDurableLimiter over %s", (_name, makeStore) => {
     ).resolves.toEqual({ scanned: 0, deleted: 0 });
     expect(tracked.writes()).toBe(initialWrites);
     expect(tracked.deletes()).toBe(0);
+  });
+
+  it("revalidates an established descriptor before writing or sweeping", async () => {
+    const resettable = resettableStore(makeStore());
+    const tracked = trackStore(resettable.store);
+    const limiter = createDurableLimiter(
+      { name: "descriptor-recheck", limit: 2, windowMs: 60_000 },
+      tracked.store,
+    );
+    await expect(limiter.allow("first", start)).resolves.toEqual({
+      allowed: true,
+    });
+    await resettable.removeDescriptor();
+    const writesBeforeRefusal = tracked.writes();
+
+    await expect(limiter.allow("second", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 60_000,
+    });
+    await expect(limiter.sweep("2026-01-01T00:10:00.000Z")).resolves.toEqual({
+      scanned: 0,
+      deleted: 0,
+    });
+    expect(tracked.writes()).toBe(writesBeforeRefusal);
+
+    const fresh = createDurableLimiter(
+      { name: "descriptor-recheck", limit: 3, windowMs: 120_000 },
+      tracked.store,
+    );
+    await expect(fresh.allow("new-window", start)).resolves.toEqual({
+      allowed: false,
+      retryAfter: 120_000,
+    });
+    expect(tracked.writes()).toBe(writesBeforeRefusal);
   });
 
   it("rejects oversized keys before hashing or storage operations", async () => {
