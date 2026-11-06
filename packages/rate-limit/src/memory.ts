@@ -29,23 +29,10 @@ const MAX_TRACKED_KEYS = 10_000;
 const MIN_PRUNE_INTERVAL_MS = 50;
 
 /**
- * Maximum key length this tier will track, measured in UTF-16 code units
- * because that is what the retained string costs: an astral symbol such as an
- * emoji counts two. Only the memory tier retains the raw key — the durable tier
- * hashes it to a fixed-length identifier — so only this tier needs the bound.
- * Keys are opaque subject identifiers such as an address, a principal, or a
- * short composite of those, so the bound sits far above legitimate use.
+ * The shared validator bounds keys before either tier scans or hashes them.
+ * Memory retains the raw string, so the UTF-16 unit also reflects its cost.
  */
-const MAX_KEY_LENGTH = 512;
-
 function assertMemoryLimiterKey(key: string): void {
-  // Checked before the shared validator's well-formedness scan, which walks
-  // the whole string, so an oversized key is rejected without being traversed.
-  if (typeof key === "string" && key.length > MAX_KEY_LENGTH) {
-    throw new TypeError(
-      `A memory-tier rate-limit key must be at most ${MAX_KEY_LENGTH} UTF-16 code units.`,
-    );
-  }
   assertRateLimitKey(key);
 }
 

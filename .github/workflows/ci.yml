@@ -17,6 +17,8 @@ jobs:
   validate:
     name: Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-latest
+    env:
+      CI: "1"
     strategy:
       fail-fast: false
       matrix:
@@ -28,7 +30,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - name: Enable Corepack
+      # setup-node resolves the pnpm cache before later steps can run.
+      - name: Enable Corepack for cache discovery
         run: corepack enable
 
       - name: Set up Node.js
@@ -37,7 +40,7 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
 
-      - name: Activate pnpm
+      - name: Enable Corepack for selected Node.js
         run: corepack enable
 
       - name: Install dependencies
@@ -48,6 +51,9 @@ jobs:
 
       - name: Check types
         run: pnpm run check
+
+      - name: Check release metadata
+        run: pnpm run release:check
 
       - name: Run tests
         run: pnpm test

@@ -1,5 +1,12 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import {
+  chmodSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import {
   mkdir,
   mkdtemp,
   readFile,
@@ -19,6 +26,7 @@ const PACKAGE_MANAGER = "pnpm@10.34.5";
 const REPOSITORY_URL = "git+https://github.com/pegma-dev/rate-limit.git";
 const NODE_RANGE = ">=22";
 const STABLE_VERSION = /^\d+\.\d+\.\d+$/u;
+const NPM_REGISTRY = "https://registry.npmjs.org/";
 const REQUIRED_DEPENDENCIES = {
   "@pegma/spine": "0.1.1",
   "@pegma/storage-core": "0.4.0",
@@ -47,18 +55,83 @@ function run(command, arguments_, options = {}) {
   return result;
 }
 
-function npmEnvironment(environment = process.env) {
-  const isolated = { ...environment };
-  delete isolated.npm_execpath;
+const NPM_ENVIRONMENT_KEYS = new Set([
+  "CI",
+  "COMSPEC",
+  "HOME",
+  "HOMEDRIVE",
+  "HOMEPATH",
+  "PATH",
+  "PATHEXT",
+  "RUNNER_TEMP",
+  "SYSTEMDRIVE",
+  "SYSTEMROOT",
+  "TEMP",
+  "TMP",
+  "TMPDIR",
+  "USERPROFILE",
+  "WINDIR",
+]);
+
+export function isolatedNpmEnvironment(
+  environment,
+  { cache, globalConfig, userConfig },
+) {
+  const isolated = {};
+  for (const [key, value] of Object.entries(environment)) {
+    const upper = key.toUpperCase();
+    if (
+      value !== undefined &&
+      (NPM_ENVIRONMENT_KEYS.has(upper) ||
+        upper.startsWith("GITHUB_") ||
+        upper.startsWith("ACTIONS_ID_TOKEN_"))
+    ) {
+      isolated[key] = value;
+    }
+  }
+  isolated.NPM_CONFIG_USERCONFIG = userConfig;
+  isolated.NPM_CONFIG_GLOBALCONFIG = globalConfig;
+  isolated.NPM_CONFIG_CACHE = cache;
+  isolated.NPM_CONFIG_REGISTRY = NPM_REGISTRY;
   return isolated;
 }
 
 function runNpm(arguments_, options = {}) {
-  return run(process.platform === "win32" ? "npm.cmd" : "npm", arguments_, {
-    ...options,
-    env: npmEnvironment(options.env ?? process.env),
-    shell: process.platform === "win32",
-  });
+  const sandbox = mkdtempSync(join(tmpdir(), "pegma-rate-limit-npm-"));
+  const userConfig = join(sandbox, "user.npmrc");
+  const globalConfig = join(sandbox, "global.npmrc");
+  const cache = join(sandbox, "cache");
+  writeFileSync(userConfig, "", { mode: 0o600 });
+  writeFileSync(globalConfig, "", { mode: 0o600 });
+  chmodSync(userConfig, 0o600);
+  chmodSync(globalConfig, 0o600);
+  try {
+    const npmCli = join(
+      dirname(process.execPath),
+      "node_modules",
+      "npm",
+      "bin",
+      "npm-cli.js",
+    );
+    if (process.platform === "win32" && !existsSync(npmCli)) {
+      fail(`npm CLI was not found beside Node.js: ${npmCli}`);
+    }
+    const command = process.platform === "win32" ? process.execPath : "npm";
+    const commandArguments =
+      process.platform === "win32" ? [npmCli, ...arguments_] : arguments_;
+    return run(command, commandArguments, {
+      ...options,
+      cwd: options.cwd ?? sandbox,
+      env: isolatedNpmEnvironment(options.env ?? process.env, {
+        cache,
+        globalConfig,
+        userConfig,
+      }),
+      shell: false,
+    });
+  } finally {
+    rmSync(sandbox, { force: true, recursive: true });
+  }
 }
 
 function decodeYamlScalar(value) {
@@ -82,7 +155,7 @@ const DEPENDENCY_SECTIONS = new Set([
 ]);
 
 function parsePnpmImporterSections(lockText, importer) {
-  const lines = lockText.split("\n");
+  const lines = lockText.split(/\r?\n/u);
   let inImporters = false;
   let inTarget = false;
   let currentSection = null;
@@ -364,7 +437,7 @@ async function readPnpmWorkspacePackages(root) {
   const text = await readFile(join(root, "pnpm-workspace.yaml"), "utf8");
   const packages = [];
   let inPackages = false;
-  for (const line of text.split("\n")) {
+  for (const line of text.split(/\r?\n/u)) {
     if (line.trim() === "packages:") {
       inPackages = true;
       continue;
@@ -404,6 +477,7 @@ function safeEqual(left, right) {
 function hashes(bytes) {
   return {
     integrity: `sha512-${createHash("sha512").update(bytes).digest("base64")}`,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
     shasum: createHash("sha1").update(bytes).digest("hex"),
   };
 }
@@ -535,6 +609,11 @@ export async function validateRepository(options = {}) {
     }
   }
   if (options.requireReleaseTag) {
+    const prerelease =
+      options.releasePrerelease ?? process.env.RELEASE_PRERELEASE;
+    if (prerelease !== false && prerelease !== "false") {
+      fail("release event prerelease state must be false");
+    }
     if (manifest.version === "0.0.0") {
       fail(
         "the 0.0.0 package-name bootstrap must not use the GitHub release workflow",
@@ -546,13 +625,13 @@ export async function validateRepository(options = {}) {
 }
 
 function validateReleaseTag(root, releaseTag, expectedCommit) {
-  if (releaseTag === undefined || !/^v\d+\.\d+\.\d+$/u.test(releaseTag)) {
+  if (
+    releaseTag === undefined ||
+    !/^v(0\.[1-9][0-9]*|[1-9][0-9]*\.[0-9]+)\.[0-9]+$/u.test(releaseTag)
+  ) {
     fail("a stable release tag is required");
   }
-  if (
-    expectedCommit === undefined ||
-    !/^[0-9a-f]{40,64}$/u.test(expectedCommit)
-  ) {
+  if (expectedCommit === undefined || !/^[0-9a-f]{40}$/u.test(expectedCommit)) {
     fail("an exact release-event commit is required");
   }
   const tagRef = `refs/tags/${releaseTag}`;
@@ -610,6 +689,52 @@ function verifyPackedFiles(manifest, files) {
   }
 }
 
+async function verifyRegularFileInventory(directory, expectedNames) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const names = entries.map(({ name }) => name).sort();
+  const expected = [...expectedNames].sort();
+  if (
+    !sameJson(names, expected) ||
+    entries.some((entry) => !entry.isFile() || entry.isSymbolicLink())
+  ) {
+    fail(
+      `release directory must contain only regular files: ${expected.join(", ")}`,
+    );
+  }
+}
+
+export async function verifyReleaseInventory(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const tarballs = entries
+    .filter(({ name }) => /^pegma-rate-limit-\d+\.\d+\.\d+\.tgz$/u.test(name))
+    .map(({ name }) => name);
+  if (tarballs.length !== 1) {
+    fail("release directory must contain exactly one versioned tarball");
+  }
+  await verifyRegularFileInventory(directory, [
+    "package-manifest.json",
+    tarballs[0],
+  ]);
+  return {
+    manifest: join(directory, "package-manifest.json"),
+    tarball: join(directory, tarballs[0]),
+  };
+}
+
+async function removeTypeScriptBuildInfo(directory) {
+  for (const entry of await readdir(directory, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      if (entry.name !== ".git" && entry.name !== "node_modules") {
+        await removeTypeScriptBuildInfo(join(directory, entry.name));
+      }
+      continue;
+    }
+    if (entry.isFile() && entry.name.endsWith(".tsbuildinfo")) {
+      await rm(join(directory, entry.name), { force: true });
+    }
+  }
+}
+
 async function smokeTest(tarball) {
   const directory = await mkdtemp(join(tmpdir(), "pegma-rate-limit-smoke-"));
   try {
@@ -647,10 +772,20 @@ async function smokeTest(tarball) {
 export async function prepareRelease(options = {}) {
   const { manifest, root } = await validateRepository(options);
   const output = resolve(root, options.output ?? ".release");
-  await mkdir(output, { recursive: true });
-  if ((await readdir(output)).length !== 0) {
-    fail(`release output directory must be empty: ${output}`);
+  if (options.output === undefined) {
+    await rm(output, { force: true, recursive: true });
+  } else {
+    await mkdir(output, { recursive: true });
+    if ((await readdir(output)).length !== 0) {
+      fail(`release output directory must be empty: ${output}`);
+    }
   }
+  await rm(join(root, PACKAGE_DIRECTORY, "dist"), {
+    force: true,
+    recursive: true,
+  });
+  await removeTypeScriptBuildInfo(root);
+  await mkdir(output, { recursive: true });
   const packedResult = runNpm(
     [
       "pack",
@@ -659,7 +794,7 @@ export async function prepareRelease(options = {}) {
       "--pack-destination",
       output,
     ],
-    { capture: true, cwd: root },
+    { capture: true },
   );
   const [packed] = JSON.parse(packedResult.stdout);
   if (
@@ -679,9 +814,8 @@ export async function prepareRelease(options = {}) {
   ) {
     fail("tarball hashes do not match npm pack metadata");
   }
-  await smokeTest(tarball);
   const prepared = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     gitCommit: run("git", ["rev-parse", "HEAD"], {
       capture: true,
       cwd: root,
@@ -691,7 +825,8 @@ export async function prepareRelease(options = {}) {
       name: PACKAGE_NAME,
       version: manifest.version,
       tarball: basename(tarball),
-      ...digest,
+      integrity: digest.integrity,
+      sha256: digest.sha256,
       files: packed.files
         .map(({ path, size }) => ({ path, size }))
         .sort((left, right) => left.path.localeCompare(right.path)),
@@ -699,6 +834,7 @@ export async function prepareRelease(options = {}) {
   };
   const preparedPath = join(output, "package-manifest.json");
   await writeFile(preparedPath, `${JSON.stringify(prepared, null, 2)}\n`);
+  await verifyReleaseInventory(output);
   return preparedPath;
 }
 
@@ -757,25 +893,61 @@ function confirmRegistryIntegrity(name, version, expected) {
   fail(`${name}@${version} did not become visible with expected integrity`);
 }
 
-async function verifyPreparedArtifact(options = {}) {
+function hasExactKeys(value, keys) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    !Array.isArray(value) &&
+    sameJson(Object.keys(value).sort(), [...keys].sort())
+  );
+}
+
+export async function verifyPreparedArtifact(options = {}) {
   const path = resolve(
     options.manifest ?? join(".release", "package-manifest.json"),
   );
+  if (basename(path) !== "package-manifest.json") {
+    fail("prepared manifest must be named package-manifest.json");
+  }
+  await verifyReleaseInventory(dirname(path));
   const prepared = await readJson(path);
   const sourceManifest = await readJson(
     join(defaultRoot(), PACKAGE_DIRECTORY, "package.json"),
   );
   if (
-    prepared.schemaVersion !== 1 ||
+    !hasExactKeys(prepared, [
+      "schemaVersion",
+      "gitCommit",
+      "releaseTag",
+      "package",
+    ]) ||
+    !hasExactKeys(prepared.package, [
+      "name",
+      "version",
+      "tarball",
+      "integrity",
+      "sha256",
+      "files",
+    ]) ||
+    prepared.schemaVersion !== 2 ||
     prepared.package?.name !== PACKAGE_NAME ||
     prepared.package.version !== sourceManifest.version ||
     !STABLE_VERSION.test(prepared.package.version) ||
-    !/^[0-9a-f]{40,64}$/u.test(prepared.gitCommit) ||
+    !/^[0-9a-f]{40}$/u.test(prepared.gitCommit) ||
     !(
       prepared.releaseTag === null ||
       prepared.releaseTag === `v${prepared.package.version}`
     ) ||
-    !Array.isArray(prepared.package.files)
+    !/^sha512-[A-Za-z0-9+/]+={0,2}$/u.test(prepared.package.integrity) ||
+    !/^[0-9a-f]{64}$/u.test(prepared.package.sha256) ||
+    !Array.isArray(prepared.package.files) ||
+    prepared.package.files.some(
+      (file) =>
+        !hasExactKeys(file, ["path", "size"]) ||
+        typeof file.path !== "string" ||
+        !Number.isSafeInteger(file.size) ||
+        file.size < 0,
+    )
   ) {
     fail("prepared release metadata is invalid");
   }
@@ -798,11 +970,16 @@ async function verifyPreparedArtifact(options = {}) {
   const digest = hashes(await readFile(tarball));
   if (
     !safeEqual(digest.integrity, prepared.package.integrity) ||
-    !safeEqual(digest.shasum, prepared.package.shasum)
+    !safeEqual(digest.sha256, prepared.package.sha256)
   ) {
     fail("the prepared tarball has changed");
   }
   return { digest, path, prepared, tarball };
+}
+
+export async function smokePreparedArtifact(options = {}) {
+  const { tarball } = await verifyPreparedArtifact(options);
+  await smokeTest(tarball);
 }
 
 export async function inspectPreparedRegistry(options = {}) {
@@ -829,8 +1006,7 @@ export async function publishPrepared(options = {}) {
     fail("release publishing is restricted to a GitHub release workflow");
   }
   requireTrustedPublishingNpm();
-  const { digest, path, prepared, tarball } =
-    await verifyPreparedArtifact(options);
+  const { digest, prepared, tarball } = await verifyPreparedArtifact(options);
   const expectedCommit =
     options.expectedReleaseCommit ?? process.env.RELEASE_COMMIT;
   const releaseTag = options.releaseTag ?? process.env.RELEASE_TAG;
@@ -850,9 +1026,16 @@ export async function publishPrepared(options = {}) {
     process.stdout.write("Registry integrity matches; skipping publish.\n");
     return;
   }
-  runNpm(["publish", tarball, "--access", "public", "--provenance"], {
-    cwd: dirname(path),
-  });
+  runNpm([
+    "publish",
+    tarball,
+    "--registry",
+    NPM_REGISTRY,
+    "--access",
+    "public",
+    "--provenance",
+    "--ignore-scripts",
+  ]);
   confirmRegistryIntegrity(
     PACKAGE_NAME,
     prepared.package.version,
@@ -911,13 +1094,16 @@ async function main() {
   } else if (command === "pack") {
     const path = await prepareRelease(options);
     process.stdout.write(`Prepared release at ${path}.\n`);
+  } else if (command === "smoke") {
+    await smokePreparedArtifact(options);
+    process.stdout.write("Prepared release imports are valid.\n");
   } else if (command === "publish") {
     await publishPrepared(options);
   } else if (command === "registry-check") {
     await inspectPreparedRegistry(options);
   } else {
     fail(
-      "usage: release-package.mjs <check|pack|publish|registry-check> [options]",
+      "usage: release-package.mjs <check|pack|smoke|publish|registry-check> [options]",
     );
   }
 }

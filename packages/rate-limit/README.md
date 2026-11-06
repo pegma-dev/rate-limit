@@ -44,13 +44,13 @@ With N host instances this can admit approximately N times `limit`. Choosing
 it means accepting that property.
 
 This tier holds its counters in memory, so its footprint is bounded on both
-axes. It tracks at most 10,000 keys at once and accepts keys of at most 512
-UTF-16 code units — the unit the retained string actually costs, so an astral
-symbol such as an emoji counts two. A longer key is rejected as invalid, the
-same way other malformed keys are. When the key cap is reached and no tracked
-key has expired yet, a check for a key that is not already tracked fails closed
-with `retryAfter` instead of growing the map. Keys already tracked keep their
-own counts and are never evicted, so a spray of unique keys can neither exhaust
+axes. It tracks at most 10,000 keys at once. Both tiers accept keys of at most
+512 UTF-16 code units; the bound is checked before trimming, Unicode scanning,
+or durable hashing. An astral symbol such as an emoji counts two. A longer key
+is rejected as invalid. When the key cap is reached and no tracked key has
+expired yet, a check for a key that is not already tracked fails closed with
+`retryAfter` instead of growing the map. Keys already tracked keep their own
+counts and are never evicted, so a spray of unique keys can neither exhaust
 host memory nor reset another subject's window.
 
 Expired keys are reclaimed as soon as they expire: the reclaim scan is aimed at
@@ -59,8 +59,8 @@ within 50 ms of a spray ageing out however long the window is. That 50 ms is a
 floor on how often the scan may run, which is what keeps its cost amortized
 constant while the cap is held.
 
-Both bounds are specific to this tier: the durable tier hashes keys to
-fixed-length identifiers and stores them, so it accepts keys of any length.
+The tracked-key count bound is specific to this tier. The shared key-length
+bound also limits work before the durable tier creates a fixed-length hash.
 
 ## Durable tier
 
@@ -77,6 +77,7 @@ const limiter = createDurableLimiter(
     windowMs: 5 * 60_000,
   }),
   store,
+  { maxClockSkewMs: 60_000 },
 );
 
 const decision = await limiter.allow(principalOrAddress);
@@ -95,12 +96,21 @@ their policy, but they are deterministic pseudonymous identifiers, not
 anonymization: predictable inputs can still be guessed and activity remains
 linkable within a policy.
 
+Each policy partition also has an immutable descriptor binding its hashed name
+to `limit` and `windowMs`, and every counter repeats those two values. A limiter
+revalidates the descriptor before counter writes and sweeps. Missing or
+conflicting settings fail closed without rewriting the descriptor or counter.
+Change either setting under a versioned policy name during a rolling deployment,
+or coordinate a store reset before reusing the name.
+
 The durable tier uses fixed windows. A burst across a boundary can briefly
 admit nearly twice the limit. It also puts shared-storage latency on every
 allowed check; do not use it for hot, cheap endpoints.
 
 Sweeps list one policy partition and delete structurally valid expired rows
-only if their versions are unchanged. Malformed rows are retained:
+only if their versions are unchanged. By default a row remains for 60 seconds
+after its window ends; `maxClockSkewMs` can set a different bounded,
+non-negative grace for hosts with a known clock envelope. Malformed rows are retained:
 storage-core listings do not expose actual row keys, so pairing a malformed
 row's version with a key reconstructed from its payload could target another
 row. Checks against that malformed row still fail closed.
