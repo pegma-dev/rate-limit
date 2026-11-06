@@ -216,7 +216,10 @@ describe("publish workflow boundaries", () => {
       "utf8",
     );
     expect(workflow).toContain("pnpm run release:check");
-    expect(workflow.match(/corepack enable/gu)).toHaveLength(1);
+    expect(workflow.match(/corepack enable/gu)).toHaveLength(2);
+    expect(workflow).toContain(
+      "setup-node resolves the pnpm cache before later steps can run",
+    );
   });
 
   it("uses deterministic LF line endings", async () => {
