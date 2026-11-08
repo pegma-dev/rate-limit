@@ -5,10 +5,12 @@ the hardened GitHub release workflow, npm trusted publishing, and provenance.
 The completed one-time manual `0.0.0` ceremony below exists as an audit record:
 npm could not configure a trusted publisher until `@pegma/rate-limit` existed.
 
-As of 2026-11-08, npm `latest` is `0.2.0` and historical `bootstrap` is `0.0.0`.
-Current source is the **unpublished `0.3.2` candidate**. The signed `0.3.0` and
-`0.3.1` GitHub releases below did not publish npm versions; neither is a host
-dependency or evidence of completed artifact/consumer verification.
+As of 2026-11-08, npm `latest` is `0.3.2` and historical `bootstrap` is `0.0.0`.
+`0.3.2` is published with exact original bytes and successful npm cryptographic
+checks, but its strict postflight **failed** the authenticated builder-identity
+policy. It is not qualified for the planned helper adoption. Current source is
+the **unpublished `0.3.3` candidate**. The signed `0.3.0` and `0.3.1` GitHub
+releases below did not publish npm versions.
 
 ## Release invariants
 
@@ -38,6 +40,8 @@ OIDC job checks the tag again, downloads the sealed artifact outside a source
 checkout, verifies the preparation manifest digest and both tarball digests,
 and invokes npm from a fresh directory with empty configuration files and an
 allowlisted environment. It never executes repository code.
+The `0.3.3` candidate preserves the nonsecret `RUNNER_ENVIRONMENT` value and
+requires `github-hosted` before invoking npm in that isolated environment.
 
 <a id="failed-030-preparation-and-031-candidate"></a>
 
@@ -65,7 +69,9 @@ or treat the failed preparation as publication. The correction used reviewed
 added explicit trust to the packing checkout without changing limiter/helper
 behavior. Its later failure was a separate upload boundary, recorded next.
 
-## Failed `0.3.1` upload and `0.3.2` candidate
+<a id="failed-031-upload-and-032-candidate"></a>
+
+## Failed `0.3.1` upload
 
 The signed annotated
 [`v0.3.1` release](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.1),
@@ -89,10 +95,10 @@ Preserve the signed `v0.3.1` tag, source and failed-run record alongside the
 earlier `v0.3.0` history. Do not replace a tag, reuse either version for changed
 source, or treat a GitHub release as npm availability.
 
-The new `0.3.2` candidate keeps the limiter/helper API and signing correction
-unchanged. Its producer uses explicit `--output` at the nonhidden
-`${RUNNER_TEMP}/rate-limit-prepared` directory, computes the manifest digest
-there, and uploads that same directory through `${{ runner.temp }}`. Hidden-file
+`0.3.2` kept the limiter/helper API and signing correction unchanged. Its
+producer used explicit `--output` at the nonhidden
+`${RUNNER_TEMP}/rate-limit-prepared` directory, computed the manifest digest
+there, and uploaded that same directory through `${{ runner.temp }}`. Hidden-file
 exclusion remains enabled (`include-hidden-files: false`); recovery does not
 broaden artifact collection.
 Validate the actual YAML producer/digest/upload wiring and file discovery with
@@ -104,16 +110,62 @@ Its [search implementation](https://github.com/actions/upload-artifact/blob/330a
 defines the glob options and directory filtering used by the
 [regression](../scripts/release-artifact-discovery.test.mjs). The test exercises
 that public glob API and filtering only; it does not execute the vendored action
-bundle or upload bytes. Current-head review, full Node 22/24
-gates, the new signed release identity, retained exact artifact, isolated smoke,
-publication and registry verification remain required for this candidate.
+bundle or upload bytes. The resulting `0.3.2` publication had the separate
+provenance-policy failure recorded next.
 
-Only after `0.3.2` actually publishes and its original prepared bytes and
-registry release are verified may a host pin it, including through an npm
-alias. This does not migrate legacy `0.2.0` counters or change existing host
-deployment state; existing Identity/Support `0.2.0` imports remain unchanged.
-No repeated bootstrap, token fallback or signature bypass is
-part of this recovery.
+## Published `0.3.2` with failed strict postflight
+
+The [`v0.3.2` release](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.2)
+binds signed source
+[`a50469dce0c123865ef3540819060509a936ec38`](https://github.com/pegma-dev/rate-limit/commit/a50469dce0c123865ef3540819060509a936ec38).
+[Run `42515823225`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225)
+attempt 1 executed
+[preparation `128838497494`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128838497494)
+and [isolated smoke `128838619041`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128838619041).
+Original artifact `13631327333` contains the sealed manifest and tarball; its
+tarball SHA-256 is
+`1bc74d4a7f5ca239bbee80097a815bbe3ae04f45eb60cc40bd53499139422802`.
+The [first publisher](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128838677268)
+published but failed waiting for registry visibility. The
+[attempt-2 publisher `128841340300`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128841340300)
+later completed idempotently using that **same original artifact**. Preparation
+and smoke were not executed again; carried-forward attempt-2 job aliases are
+not fresh pack or consumer proof.
+
+Registry metadata and downloaded `0.3.2` tarball bytes match the original
+artifact. Actual npm `11.18.0` ECDSA signature and Sigstore verification passed.
+The authenticated SLSA provenance also matches the repository, source commit,
+release tag and original attempt-1 invocation. Its builder URI, however, is
+`https://github.com/actions/runner/undefined`, rather than the required
+`https://github.com/actions/runner/github-hosted`. Strict postflight therefore
+remains **FAILED**, despite publication and a successful workflow retry.
+Cryptographic validity does not waive the authenticated-claims policy.
+Checks downstream of that failure, including strict postflight's consumer
+execution, did not complete; the earlier preparation smoke remains separate.
+
+The immutable
+[`0.3.2` publisher environment filter](https://github.com/pegma-dev/rate-limit/blob/a50469dce0c123865ef3540819060509a936ec38/.github/workflows/publish.yml#L396)
+did not preserve `RUNNER_ENVIRONMENT` for npm. The reviewed
+[`npm@11.18.0` provenance generator](https://github.com/npm/cli/blob/v11.18.0/workspaces/libnpmpublish/lib/provenance.js#L58)
+uses that value to construct the builder URI. These source facts explain the
+observed missing runner metadata; they do not turn the failed proof into a pass.
+They do not establish that the actual runner was self-hosted or untrusted.
+
+## `0.3.3` provenance-metadata candidate
+
+Current source preserves the nonsecret `RUNNER_ENVIRONMENT` value in the
+isolated npm environment and refuses to invoke that publisher's npm commands
+unless it is `github-hosted`. The limiter and maintenance-helper API are
+unchanged. Its own review, current-head Node 22/24 gates, new protected signed
+release identity, retained exact artifact, isolated smoke, publication and
+strict postflight remain pending.
+
+Hosts must await verified `0.3.3` publication before pinning the new helper,
+including through an alias. Existing Identity/Support `0.2.0` imports and
+counters remain unchanged until an explicit host transition. Preserve all
+`0.3.0`, `0.3.1` and `0.3.2` tags, releases, artifacts and failure receipts.
+Do not weaken the builder policy, move a tag, unpublish/reuse a version, repeat
+bootstrap or add a token fallback to recover.
 
 ## One-time `0.0.0` package-name bootstrap
 
@@ -126,7 +178,8 @@ During bootstrap npm also assigned the default `latest` tag to `0.0.0`. The oper
 to remove it, but npm rejected the request with HTTP 400. The immutable
 bootstrap remains exact and the `bootstrap` tag remains correct. The later
 normal `0.1.0` publication moved `latest` to the first advertised version;
-`latest` has since advanced to `0.2.0`.
+`latest` has since advanced to published `0.3.2`, whose strict-postflight
+limitation is recorded above.
 
 The steps below are retained only as the ceremony's audit and recovery record.
 
@@ -295,5 +348,6 @@ npm dist-tag ls @pegma/rate-limit
 
 For that ceremony the registry check had to report
 `@pegma/rate-limit@0.1.0: exact`, with `latest` at `0.1.0` and `bootstrap` at
-`0.0.0`. Current `latest` is `0.2.0`; do not retag an older release or repeat
-the bootstrap to prepare the unpublished `0.3.2` candidate.
+`0.0.0`. Current `latest` is published `0.3.2`, with the strict-postflight
+limitation above; do not retag an older release or repeat the bootstrap to
+prepare the unpublished `0.3.3` candidate.

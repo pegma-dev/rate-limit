@@ -401,6 +401,7 @@ jobs:
             "HOMEPATH",
             "PATH",
             "PATHEXT",
+            "RUNNER_ENVIRONMENT",
             "RUNNER_TEMP",
             "SYSTEMDRIVE",
             "SYSTEMROOT",
@@ -426,6 +427,10 @@ jobs:
           npmEnvironment.NPM_CONFIG_GLOBALCONFIG = globalConfig;
           npmEnvironment.NPM_CONFIG_CACHE = join(configDirectory, "cache");
           npmEnvironment.NPM_CONFIG_REGISTRY = REGISTRY;
+
+          if (npmEnvironment.RUNNER_ENVIRONMENT !== "github-hosted") {
+            fail("GitHub-hosted runner metadata is required for provenance");
+          }
 
           const runNpm = (arguments_, allowFailure = false) => {
             const result = spawnSync("npm", arguments_, {
