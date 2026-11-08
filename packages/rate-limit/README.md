@@ -9,7 +9,8 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> Current source is the **`0.3.0` candidate, not published**. Published `0.2.0`
+> Current source is the **`0.3.1` candidate, not published**. Registry `latest`
+> remains `0.2.0`, which
 > predates the merged descriptor/configuration hardening and the bounded
 > global sweep described here. `0.1.0` was the first advertised release, published through
 > trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
@@ -19,6 +20,12 @@ Two explicitly named application rate-limit tiers:
 The API and storage behavior below describe candidate source. Use an exact
 published version only after its release verification and an explicit host
 storage/configuration transition.
+
+The signed `v0.3.0` tag and GitHub release exist, but preparation failed before
+packing: no release artifact or npm `0.3.0` bytes were published. The `0.3.1`
+candidate fixes release-checkout SSH trust, with the reviewed limiter API
+unchanged. The immutable failure history and new patch identity are recorded in
+[release operations](../../docs/RELEASING.md#failed-030-preparation-and-031-candidate).
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
@@ -197,6 +204,11 @@ Once a descriptor exists, its policy name is bound immutably to `limit` and
 reset; conflicting instances fail closed. Do not edit descriptors in place,
 delete arbitrary malformed rows, or mistake the global sweep for a migration
 of previously published `0.2.0` data.
+
+A host adopting the new helper through an npm alias must wait for actual
+`0.3.1` publication and registry verification before pinning that alias. Existing
+`0.2.0` consumers and counters need their own deliberate migration; the new
+release does not convert them automatically.
 
 ## License
 

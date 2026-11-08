@@ -4,13 +4,22 @@
 
 **Stage:** Phases 1, 2, and 4 are complete; Phase 3 has its first production
 consumer. Registry `@pegma/rate-limit@0.2.0` is published, and pegma.dev composes
-the durable tier for its Identity surface. Current source is the **`0.3.0`
+the durable tier for its Identity surface. Registry `latest` remains `0.2.0`.
+Current source is the **`0.3.1`
 candidate, not published**, retaining exact Storage Core `0.4.0`. Published
 `0.2.0` predates the already-merged [PR #8 hardening](https://github.com/pegma-dev/rate-limit/pull/8)
 for immutable policy descriptors, counter kind/configuration bindings, and
 clock-skew grace. The candidate includes that hardening plus bounded global
 maintenance. The public API remains unstable; source completion is not a
 publication or host-adoption receipt.
+
+Signed `v0.3.0` and its GitHub release remain immutable history. Their
+preparation failed before packing because SSH trust was configured only in the
+temporary verification repository, not the packing checkout. No release
+artifact or npm `0.3.0` bytes were published. The `0.3.1` candidate corrects that
+release configuration without changing the helper API; its own review, gates,
+publication and registry verification remain required. See the
+[failed-run receipt](RELEASING.md#failed-030-preparation-and-031-candidate).
 
 The exact reviewed `0.0.0` package-name bootstrap remains published under
 `bootstrap`. The first advertised `0.1.0` release was published from the
@@ -187,7 +196,7 @@ collection over an injected Store). The memory tier must remain importable
 without a Store — a host wanting only abuse-dampening should not construct
 storage. TypeScript, vitest, the ecosystem's standard layout.
 
-## `0.3.0` bounded-maintenance source candidate
+## `0.3.1` bounded-maintenance source candidate
 
 `sweepDurableWindowsPage` is a root/durable export over the existing
 `rate-limit-windows` collection. One call makes one physical global scan page,
@@ -217,6 +226,9 @@ retrying from the previous cursor can repeat work. The
 [package contract](../packages/rate-limit/README.md#bounded-global-cleanup)
 define the interface; current-head gates, review, exact publication, and host
 adoption remain release work.
+
+Host aliases for this helper must pin `0.3.1` only after its actual verified
+registry publication. A signed tag or GitHub release alone is not publication.
 
 Upgrading existing durable data is deliberate: use versioned policy names or
 an isolated Store namespace, or coordinate a policy-store reset. Immutable

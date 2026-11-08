@@ -74,6 +74,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      - name: Apply approved signing trust to the packaging checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config --local gpg.format ssh
+          git config --local gpg.ssh.allowedSignersFile "${RUNNER_TEMP}/release-allowed-signers"
+
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
