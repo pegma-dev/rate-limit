@@ -142,10 +142,15 @@ This is a source API signature, not an execution example or publication receipt.
 One call scans one global physical page of `rate-limit-windows`, without a
 policy filter, partition enumeration, `list`, or `listVersioned`. `scanned`
 counts every adapter-returned row before filtering, even descriptors, unknown
-legacy layouts, malformed rows, and policies the current host no longer
-constructs. An oversized/invalid physical page rejects before descriptor reads
-or deletes. There are at most `limit` fresh descriptor reads and `limit`
-`deleteIfUnchanged` calls.
+legacy layouts, malformed stored payloads, and policies the current host no
+longer constructs. A nonconforming adapter page/row envelope rejects instead
+of being treated as a malformed stored payload to skip. Physical page
+validation runs before descriptor reads or deletes. There are at most `limit`
+fresh descriptor reads and `limit` `deleteIfUnchanged` calls.
+
+Those calls run sequentially. These are row/call bounds, with no wall-clock or
+deadline guarantee. Hosts should choose a small page limit using the real
+provider's storage latency, execution-time and subrequest budgets.
 
 Deletion requires a structurally valid new-format `window` with valid hashes,
 canonical window ID, aligned start, count within its stored limit, and a safe
@@ -165,8 +170,11 @@ retained.
 
 Persist `nextCursor` unchanged only after success, including pages with no
 deletions. Null ends that cycle; it does not prove no concurrent/new rows exist.
-Repeat complete cycles for ongoing hygiene. Storage or time failures reject
-without a completed page or new cursor; retain the previous cursor on failure.
+Repeat complete cycles for ongoing hygiene. Invalid adapter envelopes and
+storage or time failures reject without a completed page or new cursor;
+retain the previous cursor on failure. A mid-page failure does not roll back
+conditional deletions that already succeeded. Retrying from the prior cursor
+can repeat reads and deletion attempts.
 The helper itself does not change the already-merged memory behavior,
 `allow()` admission, or the existing per-policy sweep.
 

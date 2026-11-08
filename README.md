@@ -72,10 +72,18 @@ It validates the page bound before filtering or keyed work, then makes at most
 new-format expired window whose identity matches its actual scan key, current
 policy descriptor, and unchanged opaque version can be deleted. Descriptors,
 legacy `0.2.0` rows, malformed rows, and policy mismatches remain stored.
+Malformed stored payloads are distinct from invalid adapter page/row envelopes:
+invalid envelopes and storage failures reject the call without skipping ahead.
+
+Descriptor reads and deletes run sequentially. The row/call bounds provide no
+wall-clock or deadline guarantee. Choose a small page limit that fits the real
+provider's storage latency, execution-time and subrequest budgets.
 
 The host persists the returned cursor unchanged after a successful page,
 including a page that deletes nothing. On rejection it retains the previous
-cursor and retries later; no completed page is reported. Pages are not
+cursor and retries later; no completed page is reported. A mid-page failure
+does not roll back earlier conditional deletions, and retrying from the prior
+cursor can repeat work. Pages are not
 snapshots, so repeat complete cycles. The helper applies its configured
 clock-skew grace across the page, 60 seconds by default; choose a common grace
 consistent with the host's peer-clock envelope. The helper itself leaves the

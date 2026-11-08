@@ -194,11 +194,16 @@ storage. TypeScript, vitest, the ecosystem's standard layout.
 bounded by the required `limit`, with at most that many fresh descriptor reads
 and version-conditional deletes. Every returned row counts before filtering;
 there is no policy enumeration or unbounded list behind the page API.
+Reads and deletes are sequential; these bounds do not guarantee wall-clock
+completion or a deadline. Hosts choose a small page limit that fits the real
+provider's storage latency, execution-time and subrequest budgets.
 
 Only structurally valid new-format expired windows whose identity matches the
 actual scan key and current immutable descriptor are deletion candidates.
 The exact captured window version must still match. Descriptors, legacy
 `0.2.0` layouts, malformed rows, and unknown/mismatched policy state remain.
+Malformed stored payloads are retained; invalid adapter page/row envelopes and
+storage failures reject rather than skip/advance.
 Grace defaults to 60 seconds and is explicit host configuration across the
 global pass. Adding this helper leaves the already-merged memory-tier and
 existing `allow()`/per-policy sweep behavior unchanged.
@@ -206,6 +211,8 @@ existing `allow()`/per-policy sweep behavior unchanged.
 Hosts own cursor retention and scheduling. Preserve the opaque continuation
 after each successful page, including no-deletion pages; retain the previous
 cursor after an error. Pages are not snapshots, so repeat full cycles. The
+earlier conditional deletions from a failed page are not rolled back;
+retrying from the previous cursor can repeat work. The
 [source API](../packages/rate-limit/src/durable.ts) and
 [package contract](../packages/rate-limit/README.md#bounded-global-cleanup)
 define the interface; current-head gates, review, exact publication, and host

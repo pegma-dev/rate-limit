@@ -570,7 +570,6 @@ export async function sweepDurableWindowsPage(
   }));
   let deleted = 0;
   for (const row of rows) {
-    if (row.value === null || typeof row.value !== "object") continue;
     const window = validWindow(row.value);
     if (
       window === null ||

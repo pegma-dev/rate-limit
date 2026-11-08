@@ -182,11 +182,19 @@ describe.each(stores)(
       let noMatchContinuation = false;
       let completed = false;
       for (let page = 0; page < 100; page += 1) {
+        const prior = {
+          scans: track.scans.length,
+          gets: track.gets(),
+          deletes: track.deletes(),
+        };
         const result = await sweepDurableWindowsPage(track.store, {
           limit: 1,
           clock,
           ...(cursor === undefined ? {} : { cursor }),
         });
+        expect(track.scans.slice(prior.scans)).toEqual([1]);
+        expect(track.gets() - prior.gets).toBeLessThanOrEqual(1);
+        expect(track.deletes() - prior.deletes).toBeLessThanOrEqual(1);
         expect(result.scanned).toBeLessThanOrEqual(1);
         scanned += result.scanned;
         deleted += result.deleted;
@@ -393,6 +401,24 @@ describe.each(stores)(
 );
 
 describe("bounded cleanup input failures", () => {
+  const invalidCursors: readonly unknown[] = ["", null, 0, true, {}, []];
+  it.each(invalidCursors)(
+    "rejects invalid cursor %j before any storage I/O",
+    async (cursor) => {
+      const track = observed(createMemoryStore());
+      await expect(
+        sweepDurableWindowsPage(track.store, {
+          limit: 1,
+          clock,
+          // JavaScript callers can bypass the declared string cursor type.
+          cursor: cursor as string,
+        }),
+      ).rejects.toThrow("cursor");
+      expect(track.scans).toEqual([]);
+      expect(track.gets()).toBe(0);
+      expect(track.deletes()).toBe(0);
+    },
+  );
   it.each([0, -1, 1.5, 1001, Number.NaN, Number.POSITIVE_INFINITY])(
     "rejects invalid physical limit %s before scanning",
     async (limit) => {
