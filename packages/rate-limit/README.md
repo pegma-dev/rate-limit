@@ -9,10 +9,16 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> `0.1.0` is the first advertised release, published through
+> Current source is the **`0.3.0` candidate, not published**. Published `0.2.0`
+> predates the merged descriptor/configuration hardening and the bounded
+> global sweep described here. `0.1.0` was the first advertised release, published through
 > trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
 > package-name bootstrap remains isolated under the `bootstrap` dist-tag and
 > is never advertised as the current supported release.
+
+The API and storage behavior below describe candidate source. Use an exact
+published version only after its release verification and an explicit host
+storage/configuration transition.
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
@@ -107,13 +113,82 @@ The durable tier uses fixed windows. A burst across a boundary can briefly
 admit nearly twice the limit. It also puts shared-storage latency on every
 allowed check; do not use it for hot, cheap endpoints.
 
-Sweeps list one policy partition and delete structurally valid expired rows
+The existing `limiter.sweep()` lists one policy partition and deletes structurally valid expired rows
 only if their versions are unchanged. By default a row remains for 60 seconds
 after its window ends; `maxClockSkewMs` can set a different bounded,
 non-negative grace for hosts with a known clock envelope. Malformed rows are retained:
-storage-core listings do not expose actual row keys, so pairing a malformed
+that partition-listing API does not expose actual row keys, so pairing a malformed
 row's version with a key reconstructed from its payload could target another
 row. Checks against that malformed row still fail closed.
+
+## Bounded global cleanup
+
+The candidate adds this interface at the root and durable subpath, defined in
+[the actual source](src/durable.ts):
+
+```ts
+export declare function sweepDurableWindowsPage(
+  store: Store,
+  options: DurableWindowsSweepOptions,
+): Promise<DurableWindowsSweepPage>;
+```
+
+`options.limit` is required: a safe integer from 1 through Storage Core's
+`MAX_SCAN_PAGE_SIZE` (1,000). Other options are an opaque nonempty `cursor`,
+an optional Spine `clock`, and non-negative safe-integer `maxClockSkewMs`.
+The result is `{ scanned: number, deleted: number, nextCursor: string | null }`.
+This is a source API signature, not an execution example or publication receipt.
+
+One call scans one global physical page of `rate-limit-windows`, without a
+policy filter, partition enumeration, `list`, or `listVersioned`. `scanned`
+counts every adapter-returned row before filtering, even descriptors, unknown
+legacy layouts, malformed rows, and policies the current host no longer
+constructs. An oversized/invalid physical page rejects before descriptor reads
+or deletes. There are at most `limit` fresh descriptor reads and `limit`
+`deleteIfUnchanged` calls.
+
+Deletion requires a structurally valid new-format `window` with valid hashes,
+canonical window ID, aligned start, count within its stored limit, and a safe
+expiry. Its decoded partition/ID must match the actual scan key. The current
+descriptor is read by that authoritative key for each candidate and must match
+the exact policy kind/key/hash, descriptor null fields, `limit`, and `windowMs`.
+Only the captured unchanged window version is deleted. This is conditional
+maintenance, not an atomic snapshot across descriptors and windows.
+
+Expiry is `windowStartMs + windowMs + maxClockSkewMs <= now`. The clock must
+return a canonical timestamp; the sum must be a safe integer. The default
+grace is 60,000 ms; explicit zero is supported. The global helper applies its
+own grace to every policy it encounters, so the host chooses one that covers
+its peer-clock envelope. Descriptors, legacy `0.2.0` rows, malformed windows,
+unknown kinds, missing/mismatched descriptors, and changed window versions are
+retained.
+
+Persist `nextCursor` unchanged only after success, including pages with no
+deletions. Null ends that cycle; it does not prove no concurrent/new rows exist.
+Repeat complete cycles for ongoing hygiene. Storage or time failures reject
+without a completed page or new cursor; retain the previous cursor on failure.
+The helper itself does not change the already-merged memory behavior,
+`allow()` admission, or the existing per-policy sweep.
+
+## Migrating storage and policy configuration
+
+Registry `0.2.0` is older than the descriptor and `kind`/`limit`/`windowMs`
+hardening already merged on main. Sharing its version label or policy name
+does not make legacy counter rows compatible with this candidate. Neither
+the limiter nor global cleanup silently migrates the old layout; unknown
+legacy rows remain, and malformed encountered counter state fails closed.
+
+Select versioned policy names or a separate Store namespace for the new
+configuration, or coordinate an explicit reset of the affected policy storage.
+New names/namespaces and resets start independent count budgets; plan the
+cutover and old-data retention rather than assuming counts carry over or add
+together across deployments. The package supplies no automatic migration/reset.
+
+Once a descriptor exists, its policy name is bound immutably to `limit` and
+`windowMs`. Changing either requires another versioned name or a coordinated
+reset; conflicting instances fail closed. Do not edit descriptors in place,
+delete arbitrary malformed rows, or mistake the global sweep for a migration
+of previously published `0.2.0` data.
 
 ## License
 
