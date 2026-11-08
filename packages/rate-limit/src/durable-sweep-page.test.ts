@@ -93,6 +93,8 @@ function field(value: StoredRecord, name: string): number {
 interface Hooks {
   readonly oversized?: boolean;
   readonly fail?: "scan" | "descriptor" | "delete";
+  readonly corruptScanRow?: (row: ScanRecord<unknown>) => unknown;
+  readonly descriptorValue?: () => unknown;
   readonly beforeDelete?: (key: EntityKey) => Promise<void>;
   readonly afterDelete?: () => Promise<void>;
 }
@@ -108,17 +110,34 @@ function observed(inner: Store, hooks: Hooks = {}) {
         async scan(options) {
           scans.push(options.limit);
           if (hooks.fail === "scan") throw new Error("scan unavailable");
-          return collection.scan(
+          const page = await collection.scan(
             hooks.oversized
               ? { ...options, limit: options.limit + 1 }
               : options,
           );
+          const corrupt = hooks.corruptScanRow;
+          if (corrupt === undefined) return page;
+          return {
+            ...page,
+            // Violate only the returned adapter contract, after reading real
+            // rows. The last row pins validation before any earlier candidate.
+            records: page.records.map((row, index) =>
+              index === page.records.length - 1
+                ? (corrupt(row) as ScanRecord<T>)
+                : row,
+            ),
+          };
         },
         async getVersioned(key) {
           gets += 1;
           if (hooks.fail === "descriptor")
             throw new Error("descriptor unavailable");
-          return collection.getVersioned(key);
+          const descriptor = await collection.getVersioned(key);
+          if (descriptor === null || hooks.descriptorValue === undefined)
+            return descriptor;
+          // The physical descriptor and version are real; only its response
+          // value is deliberately outside the adapter's declared contract.
+          return { ...descriptor, value: hooks.descriptorValue() as T };
         },
         async deleteIfUnchanged(key, version) {
           deletes += 1;
@@ -231,6 +250,55 @@ describe.each(stores)(
       expect(track.deletes()).toBe(0);
       expect(await rows(backing)).toHaveLength(2);
     });
+
+    const invalidRows: ReadonlyArray<
+      readonly [string, (row: ScanRecord<unknown>) => unknown]
+    > = [
+      ["null row", () => null],
+      ["null key", (row) => ({ ...row, key: null })],
+      [
+        "nonstring partition",
+        (row) => ({ ...row, key: { ...row.key, partition: 0 } }),
+      ],
+      ["nonstring id", (row) => ({ ...row, key: { ...row.key, id: 0 } })],
+      ["empty version", (row) => ({ ...row, version: "" })],
+      ["null value", (row) => ({ ...row, value: null })],
+      ["array value", (row) => ({ ...row, value: [] })],
+      ["primitive value", (row) => ({ ...row, value: 0 })],
+    ];
+    it.each(invalidRows)(
+      "rejects a final %s envelope before any descriptor read or delete",
+      async (_label, corruptScanRow) => {
+        const backing = makeStore();
+        await seed(backing, "invalid-row-envelope");
+        const before = await rows(backing);
+        const track = observed(backing, { corruptScanRow });
+        await expect(
+          sweepDurableWindowsPage(track.store, { limit: 100, clock }),
+        ).rejects.toThrow("scan row envelope");
+        expect(track.scans).toEqual([100]);
+        expect(track.gets()).toBe(0);
+        expect(track.deletes()).toBe(0);
+        expect(await rows(backing)).toEqual(before);
+      },
+    );
+
+    it.each([null, [], 0].map((value) => ({ value })))(
+      "rejects an invalid descriptor value %j without deleting its real expired candidate",
+      async ({ value }) => {
+        const backing = makeStore();
+        await seed(backing, "invalid-descriptor-envelope");
+        const before = await rows(backing);
+        const track = observed(backing, { descriptorValue: () => value });
+        await expect(
+          sweepDurableWindowsPage(track.store, { limit: 100, clock }),
+        ).rejects.toThrow("descriptor envelope");
+        expect(track.scans).toEqual([100]);
+        expect(track.gets()).toBe(1);
+        expect(track.deletes()).toBe(0);
+        expect(await rows(backing)).toEqual(before);
+      },
+    );
 
     it("retains malformed/new-format identities and never pairs a payload key with another row's version", async () => {
       const backing = makeStore();
@@ -402,9 +470,9 @@ describe.each(stores)(
 
 describe("bounded cleanup input failures", () => {
   const invalidCursors: readonly unknown[] = ["", null, 0, true, {}, []];
-  it.each(invalidCursors)(
+  it.each(invalidCursors.map((cursor) => ({ cursor })))(
     "rejects invalid cursor %j before any storage I/O",
-    async (cursor) => {
+    async ({ cursor }) => {
       const track = observed(createMemoryStore());
       await expect(
         sweepDurableWindowsPage(track.store, {

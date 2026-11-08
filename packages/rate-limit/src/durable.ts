@@ -563,11 +563,28 @@ export async function sweepDurableWindowsPage(
     throw new TypeError("Store returned an invalid bounded scan page.");
   }
   const nextCursor = page.nextCursor;
-  const rows = page.records.map((row) => ({
-    key: { partition: row.key.partition, id: row.key.id },
-    version: row.version,
-    value: { ...row.value },
-  }));
+  const rows = page.records.map((row) => {
+    if (
+      row === null ||
+      typeof row !== "object" ||
+      row.key === null ||
+      typeof row.key !== "object" ||
+      typeof row.key.partition !== "string" ||
+      typeof row.key.id !== "string" ||
+      typeof row.version !== "string" ||
+      row.version.length === 0 ||
+      row.value === null ||
+      typeof row.value !== "object" ||
+      Array.isArray(row.value)
+    ) {
+      throw new TypeError("Store returned an invalid scan row envelope.");
+    }
+    return {
+      key: { partition: row.key.partition, id: row.key.id },
+      version: row.version,
+      value: { ...row.value },
+    };
+  });
   let deleted = 0;
   for (const row of rows) {
     const window = validWindow(row.value);
@@ -578,9 +595,7 @@ export async function sweepDurableWindowsPage(
       window.id !== idFor(window.windowStartMs, window.subjectHash) ||
       window.windowStartMs % window.windowMs !== 0 ||
       row.key.partition !== window.partition ||
-      row.key.id !== window.id ||
-      typeof row.version !== "string" ||
-      row.version.length === 0
+      row.key.id !== window.id
     )
       continue;
     const expiresAt = window.windowStartMs + window.windowMs + maxClockSkewMs;
@@ -589,6 +604,15 @@ export async function sweepDurableWindowsPage(
       partition: row.key.partition,
       id: POLICY_DESCRIPTOR_ID,
     });
+    if (
+      descriptor !== null &&
+      (typeof descriptor !== "object" ||
+        descriptor.value === null ||
+        typeof descriptor.value !== "object" ||
+        Array.isArray(descriptor.value))
+    ) {
+      throw new TypeError("Store returned an invalid descriptor envelope.");
+    }
     if (
       descriptor === null ||
       !descriptorMatches(
