@@ -104,19 +104,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          release_dir="${RUNNER_TEMP}/rate-limit-prepared"
           pnpm run release:pack -- \
             --require-clean \
             --require-main-ancestor \
             --require-release-tag \
-            --expected-release-commit "${RELEASE_COMMIT}"
-          manifest_digest="$(sha256sum .release/package-manifest.json | awk '{print $1}')"
+            --expected-release-commit "${RELEASE_COMMIT}" \
+            --output "${release_dir}"
+          manifest_digest="$(sha256sum "${release_dir}/package-manifest.json" | awk '{print $1}')"
           printf 'manifest-digest=%s\n' "${manifest_digest}" >> "${GITHUB_OUTPUT}"
 
       - name: Upload the prepared release
         uses: actions/upload-artifact@330a01c490aca151604b8cf639adc76d48f6c5d4 # v5.0.0
         with:
           name: rate-limit-release-${{ github.run_id }}
-          path: .release/
+          path: ${{ runner.temp }}/rate-limit-prepared/
           if-no-files-found: error
           include-hidden-files: false
           overwrite: true

@@ -9,7 +9,7 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> Current source is the **`0.3.1` candidate, not published**. Registry `latest`
+> Current source is the **`0.3.2` candidate, not published**. Registry `latest`
 > remains `0.2.0`, which
 > predates the merged descriptor/configuration hardening and the bounded
 > global sweep described here. `0.1.0` was the first advertised release, published through
@@ -22,10 +22,16 @@ published version only after its release verification and an explicit host
 storage/configuration transition.
 
 The signed `v0.3.0` tag and GitHub release exist, but preparation failed before
-packing: no release artifact or npm `0.3.0` bytes were published. The `0.3.1`
-candidate fixes release-checkout SSH trust, with the reviewed limiter API
-unchanged. The immutable failure history and new patch identity are recorded in
+packing: no release artifact or npm `0.3.0` bytes were published. Signed
+`v0.3.1` fixed checkout trust and passed its gates and pack, but upload excluded
+hidden `.release/`, retained zero artifacts, and skipped smoke/publication.
+There is no npm `0.3.1` release. The `0.3.2` candidate moves preparation,
+digesting and upload to the same nonhidden directory without changing the
+limiter/helper API. The immutable failure history and new candidate are recorded in
 [release operations](https://github.com/pegma-dev/rate-limit/blob/main/docs/RELEASING.md).
+No host should pin a new helper alias until actual `0.3.2` publication and
+exact-artifact verification. Existing Identity/Support `0.2.0` composition and
+legacy counter storage remain separate from that adoption.
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
@@ -206,7 +212,7 @@ delete arbitrary malformed rows, or mistake the global sweep for a migration
 of previously published `0.2.0` data.
 
 A host adopting the new helper through an npm alias must wait for actual
-`0.3.1` publication and registry verification before pinning that alias. Existing
+`0.3.2` publication and registry verification before pinning that alias. Existing
 `0.2.0` consumers and counters need their own deliberate migration; the new
 release does not convert them automatically.
 
