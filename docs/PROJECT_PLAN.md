@@ -5,7 +5,7 @@
 **Stage:** Phases 1, 2, and 4 are complete; Phase 3 has its first production
 consumer. Registry `@pegma/rate-limit@0.2.0` is published, and pegma.dev composes
 the durable tier for its Identity surface. Registry `latest` remains `0.2.0`.
-Current source is the **`0.3.1`
+Current source is the **`0.3.2`
 candidate, not published**, retaining exact Storage Core `0.4.0`. Published
 `0.2.0` predates the already-merged [PR #8 hardening](https://github.com/pegma-dev/rate-limit/pull/8)
 for immutable policy descriptors, counter kind/configuration bindings, and
@@ -16,10 +16,15 @@ publication or host-adoption receipt.
 Signed `v0.3.0` and its GitHub release remain immutable history. Their
 preparation failed before packing because SSH trust was configured only in the
 temporary verification repository, not the packing checkout. No release
-artifact or npm `0.3.0` bytes were published. The `0.3.1` candidate corrects that
-release configuration without changing the helper API; its own review, gates,
-publication and registry verification remain required. See the
-[failed-run receipt](RELEASING.md#failed-030-preparation-and-031-candidate).
+artifact or npm `0.3.0` bytes were published. Signed `v0.3.1` corrected that
+trust configuration and passed its gates/pack, then upload excluded hidden
+`.release/`: zero artifacts were retained, smoke/publication were skipped, and
+no npm `0.3.1` release exists. The `0.3.2` candidate uses one nonhidden
+preparation/digest/upload directory, with the helper API unchanged. Its own
+review, gates, publication and registry verification remain required. See the
+[failed-upload receipt](RELEASING.md#failed-031-upload-and-032-candidate).
+Hosts must await verified `0.3.2` publication before adopting the new helper,
+including an alias; existing Identity/Support `0.2.0` imports stay unchanged.
 
 The exact reviewed `0.0.0` package-name bootstrap remains published under
 `bootstrap`. The first advertised `0.1.0` release was published from the
@@ -196,7 +201,7 @@ collection over an injected Store). The memory tier must remain importable
 without a Store — a host wanting only abuse-dampening should not construct
 storage. TypeScript, vitest, the ecosystem's standard layout.
 
-## `0.3.1` bounded-maintenance source candidate
+## `0.3.2` bounded-maintenance source candidate
 
 `sweepDurableWindowsPage` is a root/durable export over the existing
 `rate-limit-windows` collection. One call makes one physical global scan page,
@@ -227,7 +232,7 @@ retrying from the previous cursor can repeat work. The
 define the interface; current-head gates, review, exact publication, and host
 adoption remain release work.
 
-Host aliases for this helper must pin `0.3.1` only after its actual verified
+Host aliases for this helper must pin `0.3.2` only after its actual verified
 registry publication. A signed tag or GitHub release alone is not publication.
 
 Upgrading existing durable data is deliberate: use versioned policy names or

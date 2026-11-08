@@ -1,6 +1,6 @@
 {
   "name": "@pegma/rate-limit",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Explicit per-instance sliding-window and shared durable fixed-window rate limiters.",
   "license": "MIT",
   "type": "module",

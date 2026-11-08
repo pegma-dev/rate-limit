@@ -5,6 +5,11 @@ the hardened GitHub release workflow, npm trusted publishing, and provenance.
 The completed one-time manual `0.0.0` ceremony below exists as an audit record:
 npm could not configure a trusted publisher until `@pegma/rate-limit` existed.
 
+As of 2026-11-08, npm `latest` is `0.2.0` and historical `bootstrap` is `0.0.0`.
+Current source is the **unpublished `0.3.2` candidate**. The signed `0.3.0` and
+`0.3.1` GitHub releases below did not publish npm versions; neither is a host
+dependency or evidence of completed artifact/consumer verification.
+
 ## Release invariants
 
 The release tool verifies the exact public workspace inventory, stable package
@@ -24,6 +29,8 @@ Normal preparation authenticates the stable signed tag in a temporary bare
 repository before checkout. The packing checkout must also configure the same
 approved SSH allowed-signers trust before the release tool independently checks
 the signed tag; trust scoped to the temporary bare repository is not inherited.
+Current preparation writes, hashes and uploads the same nonhidden
+`${RUNNER_TEMP}/rate-limit-prepared` directory, with `include-hidden-files: false`.
 The resulting artifact contains exactly two
 regular files: the manifest and its named tarball. Consumer installation runs
 in a separate job without publication authority. The environment-protected
@@ -32,10 +39,11 @@ checkout, verifies the preparation manifest digest and both tarball digests,
 and invokes npm from a fresh directory with empty configuration files and an
 allowlisted environment. It never executes repository code.
 
-## Failed `0.3.0` preparation and `0.3.1` candidate
+<a id="failed-030-preparation-and-031-candidate"></a>
 
-As of 2026-11-08, npm `latest` remains `0.2.0`; current source is the unpublished
-`0.3.1` candidate. Protected signed annotated
+## Failed `0.3.0` preparation
+
+Protected signed annotated
 [`v0.3.0`](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.0), tag object
 `9df80b019b8ed6e5b7fc0f5a8c7359ae4cae6486`, points to reviewed source
 [`93c7a4207d493e10568b797bf7d5a402f446cc70`](https://github.com/pegma-dev/rate-limit/commit/93c7a4207d493e10568b797bf7d5a402f446cc70).
@@ -52,16 +60,59 @@ failure, not evidence that the protected signed tag was invalid.
 
 Preserve the `v0.3.0` tag object, source commit, GitHub release and failed-run
 record. Never move or replace that tag, reuse its version for changed source,
-or treat the failed preparation as publication. The correction uses a reviewed
-`0.3.1` patch and a new protected signed `v0.3.1` release identity after merge.
-It adds explicit trust to the packing checkout; the limiter/helper API and
-behavior remain unchanged. The full Node 22/24 gates and exact-artifact release
-checks still apply to the new source.
+or treat the failed preparation as publication. The correction used reviewed
+`0.3.1` source and a new protected signed `v0.3.1` identity after merge. It
+added explicit trust to the packing checkout without changing limiter/helper
+behavior. Its later failure was a separate upload boundary, recorded next.
 
-Only after `0.3.1` actually publishes and its original prepared bytes and
+## Failed `0.3.1` upload and `0.3.2` candidate
+
+The signed annotated
+[`v0.3.1` release](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.1),
+tag object `0b44be7a99771e92f5defc34ca408917c403f526`, points to reviewed source
+[`b2f15e4a2a2937894ad90b623fee8914ba13ca31`](https://github.com/pegma-dev/rate-limit/commit/b2f15e4a2a2937894ad90b623fee8914ba13ca31).
+[Run `42510458896`](https://github.com/pegma-dev/rate-limit/actions/runs/42510458896),
+attempt 1, failed in
+[prepare job `128822182349`](https://github.com/pegma-dev/rate-limit/actions/runs/42510458896/job/128822182349)
+on 2026-11-08. Tag authentication, the checkout signing-trust helper, repository
+gates, and preparation/sealing all passed. The packer produced its manifest and
+tarball in the checkout's workspace-relative `.release/` directory.
+
+Upload then failed at **2026-11-08T18:32:14Z**: its path was `.release/`, while
+`include-hidden-files: false` excluded that hidden directory. Discovery found
+zero files and upload failed closed. The run's artifacts API reports zero
+retained artifacts; smoke and publish were skipped. The successful runner-local
+pack is not a downloadable, independently verified release artifact. No npm
+`0.3.1` publication occurred.
+
+Preserve the signed `v0.3.1` tag, source and failed-run record alongside the
+earlier `v0.3.0` history. Do not replace a tag, reuse either version for changed
+source, or treat a GitHub release as npm availability.
+
+The new `0.3.2` candidate keeps the limiter/helper API and signing correction
+unchanged. Its producer uses explicit `--output` at the nonhidden
+`${RUNNER_TEMP}/rate-limit-prepared` directory, computes the manifest digest
+there, and uploads that same directory through `${{ runner.temp }}`. Hidden-file
+exclusion remains enabled (`include-hidden-files: false`); recovery does not
+broaden artifact collection.
+Validate the actual YAML producer/digest/upload wiring and file discovery with
+the pinned `@actions/glob@0.5.0` regression. The pinned upload action's
+[package lock](https://github.com/actions/upload-artifact/blob/330a01c490aca151604b8cf639adc76d48f6c5d4/package-lock.json)
+records that version with the same integrity as the
+[registry artifact](https://registry.npmjs.org/@actions%2fglob/0.5.0).
+Its [search implementation](https://github.com/actions/upload-artifact/blob/330a01c490aca151604b8cf639adc76d48f6c5d4/src/shared/search.ts)
+defines the glob options and directory filtering used by the
+[regression](../scripts/release-artifact-discovery.test.mjs). The test exercises
+that public glob API and filtering only; it does not execute the vendored action
+bundle or upload bytes. Current-head review, full Node 22/24
+gates, the new signed release identity, retained exact artifact, isolated smoke,
+publication and registry verification remain required for this candidate.
+
+Only after `0.3.2` actually publishes and its original prepared bytes and
 registry release are verified may a host pin it, including through an npm
 alias. This does not migrate legacy `0.2.0` counters or change existing host
-deployment state. No repeated bootstrap, token fallback or signature bypass is
+deployment state; existing Identity/Support `0.2.0` imports remain unchanged.
+No repeated bootstrap, token fallback or signature bypass is
 part of this recovery.
 
 ## One-time `0.0.0` package-name bootstrap
@@ -245,4 +296,4 @@ npm dist-tag ls @pegma/rate-limit
 For that ceremony the registry check had to report
 `@pegma/rate-limit@0.1.0: exact`, with `latest` at `0.1.0` and `bootstrap` at
 `0.0.0`. Current `latest` is `0.2.0`; do not retag an older release or repeat
-the bootstrap to prepare the unpublished `0.3.1` candidate.
+the bootstrap to prepare the unpublished `0.3.2` candidate.
