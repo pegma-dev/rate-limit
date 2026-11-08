@@ -7,10 +7,16 @@ in-memory tier and a durable storage-backed tier for expensive operations.
 
 > [!IMPORTANT]
 > Rate Limit is in early `0.x` development. Its public API is not stable.
-> `@pegma/rate-limit@0.1.0` is the first advertised release, published from
-> the protected signed `v0.1.0` tag through trusted-publisher OIDC with
-> provenance. pegma.dev composes the durable tier in its production Identity
-> worker.
+> Current source is the **`0.3.0` candidate, not published**. Registry `0.2.0`
+> predates the merged [PR #8 hardening](https://github.com/pegma-dev/rate-limit/pull/8)
+> and the new bounded maintenance helper. The first advertised `0.1.0`
+> release was published from protected signed `v0.1.0` through
+> trusted-publisher OIDC with provenance; the historical `0.0.0` name bootstrap
+> remains separate under `bootstrap`. pegma.dev composes the durable tier in
+> its production Identity worker; this candidate is not a new host deployment.
+
+The source behavior below describes the `0.3.0` candidate. Adoption waits for
+its reviewed publication and the host's explicit configuration/storage transition.
 
 ## Two tiers, no pretending
 
@@ -48,6 +54,52 @@ Durable storage binds each policy name to its initial `limit` and `windowMs`.
 Conflicting instances fail closed; rolling configuration changes use a
 versioned policy name or a coordinated store reset. Sweeps retain ended windows
 for a configurable clock-skew grace, 60 seconds by default.
+
+## Bounded global durable maintenance (source candidate)
+
+`sweepDurableWindowsPage` is exported from the package root and
+`@pegma/rate-limit/durable`. It takes a Store and a required physical page
+`limit`, optional opaque `cursor`, `clock`, and `maxClockSkewMs`, returning
+`{ scanned, deleted, nextCursor }`. The
+[source definition](packages/rate-limit/src/durable.ts) owns the exact types.
+This is maintenance across all policies in that Store's rate-limit collection;
+it requires no policy enumeration or live limiter instances.
+
+Each call makes one scan of at most `limit` physical rows, including policy
+descriptors, unrelated policies, malformed records, and unknown legacy rows.
+It validates the page bound before filtering or keyed work, then makes at most
+`limit` fresh descriptor reads and `limit` conditional deletes. Only a valid
+new-format expired window whose identity matches its actual scan key, current
+policy descriptor, and unchanged opaque version can be deleted. Descriptors,
+legacy `0.2.0` rows, malformed rows, and policy mismatches remain stored.
+Malformed stored payloads are distinct from invalid adapter page/row envelopes:
+invalid envelopes and storage failures reject the call without skipping ahead.
+
+Descriptor reads and deletes run sequentially. The row/call bounds provide no
+wall-clock or deadline guarantee. Choose a small page limit that fits the real
+provider's storage latency, execution-time and subrequest budgets.
+
+The host persists the returned cursor unchanged after a successful page,
+including a page that deletes nothing. On rejection it retains the previous
+cursor and retries later; no completed page is reported. A mid-page failure
+does not roll back earlier conditional deletions, and retrying from the prior
+cursor can repeat work. Pages are not
+snapshots, so repeat complete cycles. The helper applies its configured
+clock-skew grace across the page, 60 seconds by default; choose a common grace
+consistent with the host's peer-clock envelope. The helper itself leaves the
+already-merged memory behavior, `allow()`, and per-policy `limiter.sweep()`
+unchanged.
+
+## Published `0.2.0` storage and configuration
+
+Published `0.2.0` predates immutable policy descriptors and the new
+`kind`/`limit`/`windowMs` counter layout. The candidate does not automatically
+convert or clean up those legacy rows. Plan a versioned policy name or a
+separate Store namespace, or coordinate a deliberate reset of the affected
+policy storage. Do not silently reuse an old layout or overwrite a descriptor
+to change limits. A new namespace/reset starts a separate count budget; the
+host must plan the transition rather than assume old and new counts combine.
+See the [package migration notes](packages/rate-limit/README.md#migrating-storage-and-policy-configuration).
 
 Fixed windows have a documented edge: a burst crossing a boundary can briefly
 admit nearly twice the configured limit. This package does not claim to be

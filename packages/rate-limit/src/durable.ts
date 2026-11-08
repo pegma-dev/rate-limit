@@ -2,6 +2,7 @@ import { systemClock } from "@pegma/spine";
 import type { IsoTimestamp } from "@pegma/spine";
 import {
   defineCollection,
+  MAX_SCAN_PAGE_SIZE,
   type Store,
   type StoredValue,
 } from "@pegma/storage-core";
@@ -182,7 +183,7 @@ function windowMatches(
 function descriptorMatches(
   value: StoredRateLimitRecord,
   expected: PartitionIdentity,
-  policy: RateLimitPolicy,
+  policy: Pick<RateLimitPolicy, "limit" | "windowMs">,
 ): boolean {
   return (
     value.kind === "policy" &&
@@ -493,6 +494,137 @@ export function createDurableLimiter(
       return { scanned: candidates.length, deleted };
     },
   };
+}
+
+export interface DurableWindowsSweepOptions extends LimiterOptions {
+  /** Physical rows per call, including descriptors and malformed/legacy rows. */
+  readonly limit: number;
+  /** Persist and return the adapter's opaque continuation unchanged. */
+  readonly cursor?: string;
+  /** Retention grace after each fixed window; defaults to 60 seconds. */
+  readonly maxClockSkewMs?: number;
+}
+
+export interface DurableWindowsSweepPage extends SweepResult {
+  readonly nextCursor: string | null;
+}
+
+/**
+ * One global physical page, without policy filters or partition enumeration.
+ *
+ * Makes one scan, at most `limit` descriptor reads and at most `limit`
+ * version-conditional deletes. Only new-format windows whose decoded identity
+ * matches the actual scan key and current policy descriptor can be removed.
+ * Unknown legacy formats, malformed rows and descriptors are retained.
+ *
+ * Storage/time failures reject: callers must not advance their saved cursor on
+ * failure. Pages are not snapshots; repeat complete cycles for ongoing hygiene.
+ */
+export async function sweepDurableWindowsPage(
+  store: Store,
+  options: DurableWindowsSweepOptions,
+): Promise<DurableWindowsSweepPage> {
+  const limit = options.limit;
+  const cursor = options.cursor;
+  if (
+    !Number.isSafeInteger(limit) ||
+    limit <= 0 ||
+    limit > MAX_SCAN_PAGE_SIZE
+  ) {
+    throw new TypeError(
+      "Sweep limit must be a positive bounded scan page size.",
+    );
+  }
+  if (
+    cursor !== undefined &&
+    (typeof cursor !== "string" || cursor.length === 0)
+  ) {
+    throw new TypeError("Sweep cursor must be an opaque nonempty string.");
+  }
+  const maxClockSkewMs = assertMaxClockSkewMs(
+    options.maxClockSkewMs ?? DEFAULT_MAX_CLOCK_SKEW_MS,
+  );
+  const now = timeInMilliseconds(options.clock ?? systemClock, undefined);
+  if (now === null)
+    throw new TypeError("Sweep clock must return a canonical timestamp.");
+  const collection = store.collection(records);
+  const page = await collection.scan({
+    limit,
+    ...(cursor === undefined ? {} : { cursor }),
+  });
+  // Validate the physical envelope before examining any candidate or making
+  // keyed reads/deletes. Filtering first would hide an oversized physical page.
+  if (
+    !Array.isArray(page.records) ||
+    page.records.length > limit ||
+    (page.nextCursor !== null &&
+      (typeof page.nextCursor !== "string" || page.nextCursor.length === 0))
+  ) {
+    throw new TypeError("Store returned an invalid bounded scan page.");
+  }
+  const nextCursor = page.nextCursor;
+  const rows = page.records.map((row) => {
+    if (
+      row === null ||
+      typeof row !== "object" ||
+      row.key === null ||
+      typeof row.key !== "object" ||
+      typeof row.key.partition !== "string" ||
+      typeof row.key.id !== "string" ||
+      typeof row.version !== "string" ||
+      row.version.length === 0 ||
+      row.value === null ||
+      typeof row.value !== "object" ||
+      Array.isArray(row.value)
+    ) {
+      throw new TypeError("Store returned an invalid scan row envelope.");
+    }
+    return {
+      key: { partition: row.key.partition, id: row.key.id },
+      version: row.version,
+      value: { ...row.value },
+    };
+  });
+  let deleted = 0;
+  for (const row of rows) {
+    const window = validWindow(row.value);
+    if (
+      window === null ||
+      window.count > window.limit ||
+      window.partition !== `policy-${window.policyHash}` ||
+      window.id !== idFor(window.windowStartMs, window.subjectHash) ||
+      window.windowStartMs % window.windowMs !== 0 ||
+      row.key.partition !== window.partition ||
+      row.key.id !== window.id
+    )
+      continue;
+    const expiresAt = window.windowStartMs + window.windowMs + maxClockSkewMs;
+    if (!Number.isSafeInteger(expiresAt) || expiresAt > now) continue;
+    const descriptor = await collection.getVersioned({
+      partition: row.key.partition,
+      id: POLICY_DESCRIPTOR_ID,
+    });
+    if (
+      descriptor !== null &&
+      (typeof descriptor !== "object" ||
+        descriptor.value === null ||
+        typeof descriptor.value !== "object" ||
+        Array.isArray(descriptor.value))
+    ) {
+      throw new TypeError("Store returned an invalid descriptor envelope.");
+    }
+    if (
+      descriptor === null ||
+      !descriptorMatches(
+        descriptor.value,
+        { partition: window.partition, policyHash: window.policyHash },
+        window,
+      )
+    )
+      continue;
+    if (await collection.deleteIfUnchanged(row.key, row.version)) deleted += 1;
+  }
+  return { scanned: rows.length, deleted, nextCursor };
 }
 
 export type {
