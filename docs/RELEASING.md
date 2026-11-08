@@ -76,7 +76,7 @@ attempt 1, failed in
 [prepare job `128822182349`](https://github.com/pegma-dev/rate-limit/actions/runs/42510458896/job/128822182349)
 on 2026-11-08. Tag authentication, the checkout signing-trust helper, repository
 gates, and preparation/sealing all passed. The packer produced its manifest and
-tarball under the runner's `.release/` directory.
+tarball in the checkout's workspace-relative `.release/` directory.
 
 Upload then failed at **2026-11-08T18:32:14Z**: its path was `.release/`, while
 `include-hidden-files: false` excluded that hidden directory. Discovery found
@@ -93,9 +93,18 @@ The new `0.3.2` candidate keeps the limiter/helper API and signing correction
 unchanged. Its producer uses explicit `--output` at the nonhidden
 `${RUNNER_TEMP}/rate-limit-prepared` directory, computes the manifest digest
 there, and uploads that same directory through `${{ runner.temp }}`. Hidden-file
-exclusion remains false; recovery does not broaden artifact collection.
+exclusion remains enabled (`include-hidden-files: false`); recovery does not
+broaden artifact collection.
 Validate the actual YAML producer/digest/upload wiring and file discovery with
-the pinned `@actions/glob@0.5.0` regression. Current-head review, full Node 22/24
+the pinned `@actions/glob@0.5.0` regression. The pinned upload action's
+[package lock](https://github.com/actions/upload-artifact/blob/330a01c490aca151604b8cf639adc76d48f6c5d4/package-lock.json)
+records that version with the same integrity as the
+[registry artifact](https://registry.npmjs.org/@actions%2fglob/0.5.0).
+Its [search implementation](https://github.com/actions/upload-artifact/blob/330a01c490aca151604b8cf639adc76d48f6c5d4/src/shared/search.ts)
+defines the glob options and directory filtering used by the
+[regression](../scripts/release-artifact-discovery.test.mjs). The test exercises
+that public glob API and filtering only; it does not execute the vendored action
+bundle or upload bytes. Current-head review, full Node 22/24
 gates, the new signed release identity, retained exact artifact, isolated smoke,
 publication and registry verification remain required for this candidate.
 
