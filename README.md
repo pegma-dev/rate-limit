@@ -7,7 +7,8 @@ in-memory tier and a durable storage-backed tier for expensive operations.
 
 > [!IMPORTANT]
 > Rate Limit is in early `0.x` development. Its public API is not stable.
-> Current source is the **`0.3.0` candidate, not published**. Registry `0.2.0`
+> Current source is the **`0.3.1` candidate, not published**. Registry `latest`
+> remains `0.2.0`, which
 > predates the merged [PR #8 hardening](https://github.com/pegma-dev/rate-limit/pull/8)
 > and the new bounded maintenance helper. The first advertised `0.1.0`
 > release was published from protected signed `v0.1.0` through
@@ -15,8 +16,14 @@ in-memory tier and a durable storage-backed tier for expensive operations.
 > remains separate under `bootstrap`. pegma.dev composes the durable tier in
 > its production Identity worker; this candidate is not a new host deployment.
 
-The source behavior below describes the `0.3.0` candidate. Adoption waits for
+The source behavior below describes the `0.3.1` candidate. Adoption waits for
 its reviewed publication and the host's explicit configuration/storage transition.
+
+The signed `v0.3.0` tag and GitHub release are retained history: their
+preparation failed before packing, produced no release artifact, and did not
+publish npm bytes. `0.3.1` corrects the packing checkout's SSH trust configuration
+without changing the reviewed limiter API. See the
+[failed preparation and patch-release record](docs/RELEASING.md#failed-030-preparation-and-031-candidate).
 
 ## Two tiers, no pretending
 

@@ -22,7 +22,7 @@
     "release:pack": "node scripts/release-package.mjs pack",
     "release:publish": "node scripts/release-package.mjs publish",
     "release:registry:check": "node scripts/release-package.mjs registry-check",
-    "test": "pnpm run build && vitest run"
+    "test": "pnpm run build && vitest run && node --test scripts/configure-release-signing.test.mjs scripts/release-workflow-signing.test.mjs"
   },
   "devDependencies": {
     "@azure/data-tables": "13.3.1",
@@ -31,6 +31,7 @@
     "azurite": "3.36.0",
     "prettier": "3.9.6",
     "typescript": "7.0.2",
-    "vitest": "4.1.10"
+    "vitest": "4.1.10",
+    "yaml": "2.9.1"
   }
 }

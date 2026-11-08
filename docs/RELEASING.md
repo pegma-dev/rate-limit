@@ -21,13 +21,48 @@ exact integrity with npm. Only npm `E404` means `absent`; an existing different
 artifact or another registry failure stops the ceremony.
 
 Normal preparation authenticates the stable signed tag in a temporary bare
-repository before checkout. The resulting artifact contains exactly two
+repository before checkout. The packing checkout must also configure the same
+approved SSH allowed-signers trust before the release tool independently checks
+the signed tag; trust scoped to the temporary bare repository is not inherited.
+The resulting artifact contains exactly two
 regular files: the manifest and its named tarball. Consumer installation runs
 in a separate job without publication authority. The environment-protected
 OIDC job checks the tag again, downloads the sealed artifact outside a source
 checkout, verifies the preparation manifest digest and both tarball digests,
 and invokes npm from a fresh directory with empty configuration files and an
 allowlisted environment. It never executes repository code.
+
+## Failed `0.3.0` preparation and `0.3.1` candidate
+
+As of 2026-11-08, npm `latest` remains `0.2.0`; current source is the unpublished
+`0.3.1` candidate. Protected signed annotated
+[`v0.3.0`](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.0), tag object
+`9df80b019b8ed6e5b7fc0f5a8c7359ae4cae6486`, points to reviewed source
+[`93c7a4207d493e10568b797bf7d5a402f446cc70`](https://github.com/pegma-dev/rate-limit/commit/93c7a4207d493e10568b797bf7d5a402f446cc70).
+Its GitHub release triggered
+[run `42501172611`](https://github.com/pegma-dev/rate-limit/actions/runs/42501172611),
+whose [preparation job `128794037936`](https://github.com/pegma-dev/rate-limit/actions/runs/42501172611/job/128794037936)
+failed before packing. There is no prepared manifest/tarball artifact from that
+run and no npm `0.3.0` publication.
+
+The temporary bare repository had the approved SSH allowed-signers trust, but
+the separate packing checkout did not. The release tool's independent tag
+verification therefore failed there. This was a checkout trust-configuration
+failure, not evidence that the protected signed tag was invalid.
+
+Preserve the `v0.3.0` tag object, source commit, GitHub release and failed-run
+record. Never move or replace that tag, reuse its version for changed source,
+or treat the failed preparation as publication. The correction uses a reviewed
+`0.3.1` patch and a new protected signed `v0.3.1` release identity after merge.
+It adds explicit trust to the packing checkout; the limiter/helper API and
+behavior remain unchanged. The full Node 22/24 gates and exact-artifact release
+checks still apply to the new source.
+
+Only after `0.3.1` actually publishes and its original prepared bytes and
+registry release are verified may a host pin it, including through an npm
+alias. This does not migrate legacy `0.2.0` counters or change existing host
+deployment state. No repeated bootstrap, token fallback or signature bypass is
+part of this recovery.
 
 ## One-time `0.0.0` package-name bootstrap
 
@@ -36,11 +71,11 @@ under `bootstrap`, its signed annotated source tag points to the reviewed
 `origin/main` commit, and npm trusted publishing is configured for
 `pegma-dev/rate-limit`, `publish.yml`, and the `npm-publish` environment.
 
-npm also assigned the default `latest` tag to `0.0.0`. The operator attempted
+During bootstrap npm also assigned the default `latest` tag to `0.0.0`. The operator attempted
 to remove it, but npm rejected the request with HTTP 400. The immutable
-bootstrap remains exact and the `bootstrap` tag remains correct; publishing
-`0.1.0` through the normal workflow will immediately move `latest` to the
-first advertised version.
+bootstrap remains exact and the `bootstrap` tag remains correct. The later
+normal `0.1.0` publication moved `latest` to the first advertised version;
+`latest` has since advanced to `0.2.0`.
 
 The steps below are retained only as the ceremony's audit and recovery record.
 
@@ -122,7 +157,7 @@ npm dist-tag ls @pegma/rate-limit
 
 `bootstrap` points to `0.0.0`. npm unexpectedly also made `latest` point to
 `0.0.0` and rejected its removal with HTTP 400; do not retry destructive
-registry changes. The `0.1.0` publication corrects the default tag.
+registry changes. The later `0.1.0` publication corrected that default tag.
 
 ### 4. Configure trusted publishing
 
@@ -145,15 +180,17 @@ The workflow intentionally rejects `0.0.0`; its first permitted release is
 
 ## First advertised `0.1.0` release
 
-This separate reviewed pull request must:
+**Complete; historical ceremony.** The separate reviewed release pull request
+was required to:
 
 1. change `packages/rate-limit/package.json` from `0.0.0` to `0.1.0`;
 2. regenerate `pnpm-lock.yaml` and verify its workspace importer pins `0.1.0`;
 3. update README and plan status with the advertised release notes; and
 4. pass the full gate and release pack smoke on Node 22 and 24.
 
-After that pull request merges, create the protected signed annotated
-`v0.1.0` tag on the exact `origin/main` commit and create the GitHub release:
+After that pull request merged, the protected signed annotated `v0.1.0` tag
+and GitHub release were created at the exact `origin/main` commit. These
+commands are retained as the historical ceremony, not instructions to repeat it:
 
 ```sh
 git fetch origin
@@ -205,5 +242,7 @@ pnpm run release:registry:check -- --manifest "${artifact_dir}/package-manifest.
 npm dist-tag ls @pegma/rate-limit
 ```
 
-The registry check must report `@pegma/rate-limit@0.1.0: exact`;
-`latest` must point to `0.1.0`, while `bootstrap` remains at `0.0.0`.
+For that ceremony the registry check had to report
+`@pegma/rate-limit@0.1.0: exact`, with `latest` at `0.1.0` and `bootstrap` at
+`0.0.0`. Current `latest` is `0.2.0`; do not retag an older release or repeat
+the bootstrap to prepare the unpublished `0.3.1` candidate.

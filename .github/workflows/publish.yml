@@ -80,6 +80,9 @@ jobs:
           node-version: 24.18.0
           package-manager-cache: false
 
+      - name: Apply approved signing trust to the packaging checkout
+        run: node scripts/configure-release-signing.mjs "${RUNNER_TEMP}/release-allowed-signers" "${RELEASE_TAG}"
+
       - name: Enable Corepack
         run: corepack enable
 
