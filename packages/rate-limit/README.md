@@ -25,7 +25,7 @@ The signed `v0.3.0` tag and GitHub release exist, but preparation failed before
 packing: no release artifact or npm `0.3.0` bytes were published. The `0.3.1`
 candidate fixes release-checkout SSH trust, with the reviewed limiter API
 unchanged. The immutable failure history and new patch identity are recorded in
-[release operations](../../docs/RELEASING.md#failed-030-preparation-and-031-candidate).
+[release operations](https://github.com/pegma-dev/rate-limit/blob/main/docs/RELEASING.md).
 
 There is no default tier and no automatic upgrade. This package is application
 abuse control, not DDoS protection, HTTP middleware, or billing metering.
@@ -131,7 +131,7 @@ row. Checks against that malformed row still fail closed.
 ## Bounded global cleanup
 
 The candidate adds this interface at the root and durable subpath, defined in
-[the actual source](src/durable.ts):
+[the actual source](https://github.com/pegma-dev/rate-limit/blob/main/packages/rate-limit/src/durable.ts):
 
 ```ts
 export declare function sweepDurableWindowsPage(
