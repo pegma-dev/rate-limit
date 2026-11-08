@@ -63,6 +63,7 @@ const NPM_ENVIRONMENT_KEYS = new Set([
   "HOMEPATH",
   "PATH",
   "PATHEXT",
+  "RUNNER_ENVIRONMENT",
   "RUNNER_TEMP",
   "SYSTEMDRIVE",
   "SYSTEMROOT",
@@ -82,6 +83,7 @@ export function isolatedNpmEnvironment(
     const upper = key.toUpperCase();
     if (
       value !== undefined &&
+      (upper !== "RUNNER_ENVIRONMENT" || key === "RUNNER_ENVIRONMENT") &&
       (NPM_ENVIRONMENT_KEYS.has(upper) ||
         upper.startsWith("GITHUB_") ||
         upper.startsWith("ACTIONS_ID_TOKEN_"))
@@ -106,6 +108,21 @@ function runNpm(arguments_, options = {}) {
   chmodSync(userConfig, 0o600);
   chmodSync(globalConfig, 0o600);
   try {
+    const environment = isolatedNpmEnvironment(options.env ?? process.env, {
+      cache,
+      globalConfig,
+      userConfig,
+    });
+    // The alternate publisher is not the normal OIDC workflow. If invoked,
+    // require truthful builder metadata in the actual filtered npm child too.
+    // Ordinary local npm reads/checks do not acquire this publishing constraint.
+    if (
+      (options.provenancePublishing === true ||
+        (arguments_[0] === "publish" && arguments_.includes("--provenance"))) &&
+      environment.RUNNER_ENVIRONMENT !== "github-hosted"
+    ) {
+      fail("GitHub-hosted runner metadata is required for provenance");
+    }
     const npmCli = join(
       dirname(process.execPath),
       "node_modules",
@@ -122,11 +139,7 @@ function runNpm(arguments_, options = {}) {
     return run(command, commandArguments, {
       ...options,
       cwd: options.cwd ?? sandbox,
-      env: isolatedNpmEnvironment(options.env ?? process.env, {
-        cache,
-        globalConfig,
-        userConfig,
-      }),
+      env: environment,
       shell: false,
     });
   } finally {
@@ -860,7 +873,10 @@ function registryIntegrity(name, version) {
 }
 
 function requireTrustedPublishingNpm() {
-  const version = runNpm(["--version"], { capture: true }).stdout.trim();
+  const version = runNpm(["--version"], {
+    capture: true,
+    provenancePublishing: true,
+  }).stdout.trim();
   const match = /^(\d+)\.(\d+)\.(\d+)(?:-.+)?$/u.exec(version);
   if (match === null) {
     fail(`could not parse npm version ${version}`);

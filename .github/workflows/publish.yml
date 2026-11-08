@@ -380,110 +380,112 @@ jobs:
             fail("prepared tarball digest is invalid");
           }
 
-          const configDirectory = mkdtempSync(
-            join(process.env.RUNNER_TEMP || tmpdir(), "rate-limit-npm-config-"),
-          );
-          const publishDirectory = mkdtempSync(
-            join(process.env.RUNNER_TEMP || tmpdir(), "rate-limit-npm-cwd-"),
-          );
-          const userConfig = join(configDirectory, "user.npmrc");
-          const globalConfig = join(configDirectory, "global.npmrc");
-          writeFileSync(userConfig, "", { mode: 0o600 });
-          writeFileSync(globalConfig, "", { mode: 0o600 });
-          chmodSync(userConfig, 0o600);
-          chmodSync(globalConfig, 0o600);
-
-          const keep = new Set([
-            "CI",
-            "COMSPEC",
-            "HOME",
-            "HOMEDRIVE",
-            "HOMEPATH",
-            "PATH",
-            "PATHEXT",
-            "RUNNER_ENVIRONMENT",
-            "RUNNER_TEMP",
-            "SYSTEMDRIVE",
-            "SYSTEMROOT",
-            "TEMP",
-            "TMP",
-            "TMPDIR",
-            "USERPROFILE",
-            "WINDIR",
-          ]);
-          const npmEnvironment = {};
-          for (const [key, value] of Object.entries(process.env)) {
-            const upper = key.toUpperCase();
-            if (
-              value !== undefined &&
-              (keep.has(upper) ||
-                upper.startsWith("GITHUB_") ||
-                upper.startsWith("ACTIONS_ID_TOKEN_"))
-            ) {
-              npmEnvironment[key] = value;
-            }
-          }
-          npmEnvironment.NPM_CONFIG_USERCONFIG = userConfig;
-          npmEnvironment.NPM_CONFIG_GLOBALCONFIG = globalConfig;
-          npmEnvironment.NPM_CONFIG_CACHE = join(configDirectory, "cache");
-          npmEnvironment.NPM_CONFIG_REGISTRY = REGISTRY;
-
-          if (npmEnvironment.RUNNER_ENVIRONMENT !== "github-hosted") {
-            fail("GitHub-hosted runner metadata is required for provenance");
-          }
-
-          const runNpm = (arguments_, allowFailure = false) => {
-            const result = spawnSync("npm", arguments_, {
-              cwd: publishDirectory,
-              encoding: "utf8",
-              env: npmEnvironment,
-              stdio: allowFailure ? "pipe" : "inherit",
-            });
-            if (result.error) throw result.error;
-            if (!allowFailure && result.status !== 0) {
-              fail(`npm ${arguments_.join(" ")} failed`);
-            }
-            return result;
-          };
-          const npmVersion = runNpm(["--version"], true).stdout.trim();
-          const versionMatch = /^(\d+)\.(\d+)\.(\d+)/u.exec(npmVersion);
-          if (
-            versionMatch === null ||
-            Number(versionMatch[1]) < 11 ||
-            (Number(versionMatch[1]) === 11 &&
-              (Number(versionMatch[2]) < 5 ||
-                (Number(versionMatch[2]) === 5 &&
-                  Number(versionMatch[3]) < 1)))
-          ) {
-            fail("npm 11.5.1 or newer is required for trusted publishing");
-          }
-
-          const registryIntegrity = () => {
-            const result = runNpm(
-              [
-                "view",
-                `${PACKAGE_NAME}@${manifest.package.version}`,
-                "dist.integrity",
-                "--json",
-                "--registry",
-                REGISTRY,
-              ],
-              true,
-            );
-            if (result.status === 0) {
-              const value = JSON.parse(result.stdout);
-              if (typeof value !== "string") {
-                fail("registry returned invalid integrity metadata");
-              }
-              return value;
-            }
-            if (/\bE404\b/u.test(`${result.stdout}\n${result.stderr}`)) {
-              return null;
-            }
-            fail("registry lookup failed");
-          };
-
+          let configDirectory;
+          let publishDirectory;
           try {
+            configDirectory = mkdtempSync(
+              join(process.env.RUNNER_TEMP || tmpdir(), "rate-limit-npm-config-"),
+            );
+            publishDirectory = mkdtempSync(
+              join(process.env.RUNNER_TEMP || tmpdir(), "rate-limit-npm-cwd-"),
+            );
+            const userConfig = join(configDirectory, "user.npmrc");
+            const globalConfig = join(configDirectory, "global.npmrc");
+            writeFileSync(userConfig, "", { mode: 0o600 });
+            writeFileSync(globalConfig, "", { mode: 0o600 });
+            chmodSync(userConfig, 0o600);
+            chmodSync(globalConfig, 0o600);
+
+            const keep = new Set([
+              "CI",
+              "COMSPEC",
+              "HOME",
+              "HOMEDRIVE",
+              "HOMEPATH",
+              "PATH",
+              "PATHEXT",
+              "RUNNER_ENVIRONMENT",
+              "RUNNER_TEMP",
+              "SYSTEMDRIVE",
+              "SYSTEMROOT",
+              "TEMP",
+              "TMP",
+              "TMPDIR",
+              "USERPROFILE",
+              "WINDIR",
+            ]);
+            const npmEnvironment = {};
+            for (const [key, value] of Object.entries(process.env)) {
+              const upper = key.toUpperCase();
+              if (
+                value !== undefined &&
+                (keep.has(upper) ||
+                  upper.startsWith("GITHUB_") ||
+                  upper.startsWith("ACTIONS_ID_TOKEN_"))
+              ) {
+                npmEnvironment[key] = value;
+              }
+            }
+            npmEnvironment.NPM_CONFIG_USERCONFIG = userConfig;
+            npmEnvironment.NPM_CONFIG_GLOBALCONFIG = globalConfig;
+            npmEnvironment.NPM_CONFIG_CACHE = join(configDirectory, "cache");
+            npmEnvironment.NPM_CONFIG_REGISTRY = REGISTRY;
+
+            if (npmEnvironment.RUNNER_ENVIRONMENT !== "github-hosted") {
+              fail("GitHub-hosted runner metadata is required for provenance");
+            }
+
+            const runNpm = (arguments_, allowFailure = false) => {
+              const result = spawnSync("npm", arguments_, {
+                cwd: publishDirectory,
+                encoding: "utf8",
+                env: npmEnvironment,
+                stdio: allowFailure ? "pipe" : "inherit",
+              });
+              if (result.error) throw result.error;
+              if (!allowFailure && result.status !== 0) {
+                fail(`npm ${arguments_.join(" ")} failed`);
+              }
+              return result;
+            };
+            const npmVersion = runNpm(["--version"], true).stdout.trim();
+            const versionMatch = /^(\d+)\.(\d+)\.(\d+)/u.exec(npmVersion);
+            if (
+              versionMatch === null ||
+              Number(versionMatch[1]) < 11 ||
+              (Number(versionMatch[1]) === 11 &&
+                (Number(versionMatch[2]) < 5 ||
+                  (Number(versionMatch[2]) === 5 &&
+                    Number(versionMatch[3]) < 1)))
+            ) {
+              fail("npm 11.5.1 or newer is required for trusted publishing");
+            }
+
+            const registryIntegrity = () => {
+              const result = runNpm(
+                [
+                  "view",
+                  `${PACKAGE_NAME}@${manifest.package.version}`,
+                  "dist.integrity",
+                  "--json",
+                  "--registry",
+                  REGISTRY,
+                ],
+                true,
+              );
+              if (result.status === 0) {
+                const value = JSON.parse(result.stdout);
+                if (typeof value !== "string") {
+                  fail("registry returned invalid integrity metadata");
+                }
+                return value;
+              }
+              if (/\bE404\b/u.test(`${result.stdout}\n${result.stderr}`)) {
+                return null;
+              }
+              fail("registry lookup failed");
+            };
+
             const existing = registryIntegrity();
             if (existing !== null) {
               if (!same(existing, integrity)) {
@@ -523,7 +525,11 @@ jobs:
               }
             }
           } finally {
-            rmSync(configDirectory, { force: true, recursive: true });
-            rmSync(publishDirectory, { force: true, recursive: true });
+            if (configDirectory !== undefined) {
+              rmSync(configDirectory, { force: true, recursive: true });
+            }
+            if (publishDirectory !== undefined) {
+              rmSync(publishDirectory, { force: true, recursive: true });
+            }
           }
           NODE

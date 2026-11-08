@@ -18,7 +18,9 @@ in-memory tier and a durable storage-backed tier for expensive operations.
 
 The source behavior below describes `0.3.3`, with the limiter/helper API
 unchanged from `0.3.2`. Adoption waits for the new candidate's verified release
-and the host's explicit configuration/storage transition.
+and the host's explicit configuration/storage transition. The
+[public postflight procedure](docs/RELEASING.md#public-postflight-procedure)
+defines the required byte, cryptographic, provenance-policy and consumer checks.
 
 The signed `v0.3.0` tag and GitHub release are retained history: their
 preparation failed before packing, produced no release artifact, and did not

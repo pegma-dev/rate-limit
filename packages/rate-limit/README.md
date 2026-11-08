@@ -20,7 +20,9 @@ Two explicitly named application rate-limit tiers:
 The API and storage behavior below describe `0.3.3` candidate source; the
 limiter/helper API is unchanged from `0.3.2`. Use an exact published version
 only after its release verification and an explicit host storage/configuration
-transition.
+transition. Follow the
+[public postflight procedure](https://github.com/pegma-dev/rate-limit/blob/main/docs/RELEASING.md#public-postflight-procedure);
+an exact-byte registry check alone is insufficient.
 
 The signed `v0.3.0` tag and GitHub release exist, but preparation failed before
 packing: no release artifact or npm `0.3.0` bytes were published. Signed

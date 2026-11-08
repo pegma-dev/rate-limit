@@ -239,6 +239,8 @@ adoption remain release work.
 Host aliases for this helper must await actual verified `0.3.3` registry
 publication. Published `0.3.2` did not pass strict postflight; a signed tag,
 GitHub release or successful publisher job alone is not adoption qualification.
+The [public postflight procedure](RELEASING.md#public-postflight-procedure)
+records the required independent checks and acceptance criteria.
 
 Upgrading existing durable data is deliberate: use versioned policy names or
 an isolated Store namespace, or coordinate a policy-store reset. Immutable

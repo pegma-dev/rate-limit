@@ -8,7 +8,8 @@ import { parse } from "yaml";
 const WORKFLOW = new URL("../.github/workflows/publish.yml", import.meta.url);
 const STEP = "Verify and publish the prepared tarball";
 const START = "const keep = new Set([\n";
-const END = "const runNpm = (arguments_, allowFailure = false) => {";
+const RUNNER = "const runNpm = (arguments_, allowFailure = false) => {";
+const END = 'const npmVersion = runNpm(["--version"], true).stdout.trim();';
 const OFFICIAL_REGISTRY = "https://registry.npmjs.org/";
 const RUNNER_REFUSAL =
   "GitHub-hosted runner metadata is required for provenance";
@@ -50,40 +51,83 @@ async function boundary() {
     2,
     "Expected one environment start marker",
   );
-  assert.equal(body.split(END).length, 2, "Expected one pre-npm end marker");
+  assert.equal(
+    body.split(RUNNER).length,
+    2,
+    "Expected one npm runner definition",
+  );
+  assert.equal(
+    body.split(END).length,
+    2,
+    "Expected one automatic npm-call marker",
+  );
   const start = body.indexOf(START);
+  const runner = body.indexOf(RUNNER);
   const end = body.indexOf(END);
-  assert.ok(end > start, "Environment admission must precede the npm boundary");
+  assert.ok(
+    start < runner && runner < end,
+    "Environment admission and runner must precede the automatic npm call",
+  );
   const source = body.slice(start, end);
   assert.doesNotMatch(
-    source,
+    body.slice(start, runner),
     /\b(?:spawnSync|runNpm|require|import|fetch|readFileSync|writeFileSync)\b/u,
-    "Only environment construction/admission may enter the isolated replay",
+    "Environment construction must contain no command or filesystem calls",
+  );
+  assert.match(
+    body.slice(runner, end),
+    /^const runNpm = \(arguments_, allowFailure = false\) => \{[\s\S]+\n\s*\};\s*$/u,
+    "Capture must finish at the actual npm runner's closing boundary",
   );
   return { source, registry };
 }
 
 /**
- * Execute only the captured environment slice with an inert process and paths.
- * No real environment, filesystem, command runner, network or credentials enter
- * the VM. These tests establish a producer boundary, not OIDC/Sigstore proof.
+ * Execute only the captured environment/runner slice with inert process/paths.
+ * The actual runner receives --version through a capturing stub, never a child
+ * process. No real environment, filesystem, network or credentials enter the VM.
+ * These tests establish a producer boundary, not OIDC/Sigstore proof.
  */
-function replay(captured, environment) {
+function replay(captured, environment, calls = []) {
   const configDirectory = join("synthetic-release-only", "private-config");
+  const publishDirectory = join("synthetic-release-only", "empty-publish-cwd");
   const userConfig = join(configDirectory, "user.npmrc");
   const globalConfig = join(configDirectory, "global.npmrc");
   const input = Object.freeze({ ...environment });
-  const script = new Script(captured.source + "\nnpmEnvironment;", {
-    filename: "captured-publish-environment-only.js",
-  });
+  const script = new Script(
+    captured.source +
+      '\n({ environment: npmEnvironment, probe: runNpm(["--version"], true) });',
+    {
+      filename: "captured-publish-environment-only.js",
+    },
+  );
   const result = script.runInNewContext(
     {
       process: Object.freeze({ env: input }),
       configDirectory,
+      publishDirectory,
       userConfig,
       globalConfig,
       REGISTRY: captured.registry,
       join,
+      spawnSync(command, arguments_, options) {
+        assert.equal(command, "npm", "Only the inert npm stub is supported");
+        assert.deepEqual(
+          Array.from(arguments_),
+          ["--version"],
+          "No publish/install/registry command may enter this replay",
+        );
+        calls.push({
+          command,
+          arguments: Array.from(arguments_),
+          options: { ...options },
+          environmentSnapshot:
+            options.env === undefined
+              ? undefined
+              : Object.fromEntries(Object.entries(options.env)),
+        });
+        return { status: 0, stdout: "11.18.0\n", stderr: "" };
+      },
       fail(message) {
         throw new Error(message);
       },
@@ -95,12 +139,38 @@ function replay(captured, environment) {
   );
   return {
     // Detach the cross-realm object; values are these fixture strings only.
-    environment: Object.fromEntries(Object.entries(result)),
+    environment: Object.fromEntries(Object.entries(result.environment)),
+    constructedEnvironment: result.environment,
+    calls,
+    probe: result.probe,
     input,
+    publishDirectory,
     userConfig,
     globalConfig,
     cache: join(configDirectory, "cache"),
   };
+}
+
+function requireNpmEnvironment(result) {
+  assert.equal(
+    result.calls.length,
+    1,
+    "Expected exactly one inert version probe",
+  );
+  const call = result.calls[0];
+  assert.equal(
+    call.options.env,
+    result.constructedEnvironment,
+    "Actual npm runner must receive exactly the constructed filtered environment",
+  );
+  assert.deepEqual(call.environmentSnapshot, result.environment);
+  assert.deepEqual(call.arguments, ["--version"]);
+  assert.equal(call.command, "npm");
+  assert.equal(call.options.cwd, result.publishDirectory);
+  assert.equal(call.options.encoding, "utf8");
+  assert.equal(call.options.stdio, "pipe");
+  assert.equal(result.probe.status, 0);
+  assert.equal(result.probe.stdout, "11.18.0\n");
 }
 
 function metadata() {
@@ -140,6 +210,7 @@ function metadata() {
 test("actual YAML environment retains github-hosted and needed GitHub/OIDC metadata", async () => {
   const source = metadata();
   const result = replay(await boundary(), source);
+  requireNpmEnvironment(result);
   for (const [name, value] of Object.entries(source)) {
     assert.equal(
       result.environment[name],
@@ -170,9 +241,20 @@ test("actual YAML rebuilds isolated npm configuration and drops ambient credenti
     NODE_OPTIONS: "--require synthetic-untrusted-hook.js",
     node_options: "--require synthetic-lowercase-hook.js",
     NODE_PATH: "synthetic-untrusted-module-path",
+    HTTP_PROXY: "https://synthetic-proxy.example.invalid/",
+    HTTPS_PROXY: "https://synthetic-tls-proxy.example.invalid/",
+    ALL_PROXY: "socks://synthetic-all-proxy.example.invalid/",
+    NO_PROXY: "synthetic-bypass.example.invalid",
+    http_proxy: "https://synthetic-lowercase-proxy.example.invalid/",
+    https_proxy: "https://synthetic-lowercase-tls-proxy.example.invalid/",
+    all_proxy: "socks://synthetic-lowercase-all-proxy.example.invalid/",
+    no_proxy: "synthetic-lowercase-bypass.example.invalid",
+    NODE_EXTRA_CA_CERTS: "synthetic-untrusted-root-ca.pem",
+    node_extra_ca_certs: "synthetic-lowercase-root-ca.pem",
     RELEASE_ALLOWED_SIGNERS: "synthetic-signers-not-needed-by-npm",
   };
   const result = replay(await boundary(), { ...metadata(), ...poison });
+  requireNpmEnvironment(result);
   const replacement = {
     NPM_CONFIG_USERCONFIG: result.userConfig,
     NPM_CONFIG_GLOBALCONFIG: result.globalConfig,
@@ -209,9 +291,15 @@ for (const [name, value] of [
       const environment = metadata();
       if (value === undefined) delete environment.RUNNER_ENVIRONMENT;
       else environment.RUNNER_ENVIRONMENT = value;
-      assert.throws(() => replay(captured, environment), {
+      const calls = [];
+      assert.throws(() => replay(captured, environment, calls), {
         message: RUNNER_REFUSAL,
       });
+      assert.deepEqual(
+        calls,
+        [],
+        "Invalid runner must fail before the version probe",
+      );
     },
   );
 }
@@ -221,9 +309,11 @@ test("lowercase-only runner metadata cannot replace the canonical npm provenance
   const environment = metadata();
   delete environment.RUNNER_ENVIRONMENT;
   environment.runner_environment = "github-hosted";
-  assert.throws(() => replay(captured, environment), {
+  const calls = [];
+  assert.throws(() => replay(captured, environment, calls), {
     message: RUNNER_REFUSAL,
   });
+  assert.deepEqual(calls, []);
 });
 
 test("removing the actual keep entry reproduces the original lost-runner metadata refusal", async () => {
@@ -234,7 +324,36 @@ test("removing the actual keep entry reproduces the original lost-runner metadat
     ...captured,
     source: captured.source.replace(entry, ""),
   };
-  assert.throws(() => replay(withoutRunner, metadata()), {
+  const calls = [];
+  assert.throws(() => replay(withoutRunner, metadata(), calls), {
     message: RUNNER_REFUSAL,
   });
+  assert.deepEqual(calls, []);
 });
+
+for (const [name, replacement] of [
+  ["omitted child environment", ""],
+  ["ambient process environment", "env: process.env,\n"],
+]) {
+  test(
+    "disconnecting the actual runner via " + name + " fails the child contract",
+    async () => {
+      const captured = await boundary();
+      const binding = /^\s*env: npmEnvironment,\n/gmu;
+      one(captured.source, binding, "actual npm child environment binding");
+      const disconnected = {
+        ...captured,
+        source: captured.source.replace(binding, replacement),
+      };
+      const result = replay(disconnected, {
+        ...metadata(),
+        NODE_AUTH_TOKEN: "synthetic-ambient-poison",
+        HTTPS_PROXY: "https://synthetic-ambient-proxy.example.invalid/",
+      });
+      assert.throws(
+        () => requireNpmEnvironment(result),
+        /Actual npm runner must receive exactly the constructed filtered environment/u,
+      );
+    },
+  );
+}
