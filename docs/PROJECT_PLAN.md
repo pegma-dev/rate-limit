@@ -3,10 +3,11 @@
 ## Status
 
 **Stage:** Phases 1, 2, and 4 are complete; Phase 3 has its first production
-consumer. Registry `@pegma/rate-limit@0.2.0` is published, and pegma.dev composes
-the durable tier for its Identity surface. Registry `latest` remains `0.2.0`.
-Current source is the **`0.3.2`
-candidate, not published**, retaining exact Storage Core `0.4.0`. Published
+consumer. pegma.dev composes the durable tier for its Identity surface.
+Registry `latest` is published `0.3.2`; exact-byte and npm cryptographic checks
+passed, but strict postflight rejected its authenticated builder identity.
+It is not qualified for the planned helper adoption. Current source is the
+**unpublished `0.3.3` candidate**, retaining exact Storage Core `0.4.0`. Published
 `0.2.0` predates the already-merged [PR #8 hardening](https://github.com/pegma-dev/rate-limit/pull/8)
 for immutable policy descriptors, counter kind/configuration bindings, and
 clock-skew grace. The candidate includes that hardening plus bounded global
@@ -19,11 +20,14 @@ temporary verification repository, not the packing checkout. No release
 artifact or npm `0.3.0` bytes were published. Signed `v0.3.1` corrected that
 trust configuration and passed its gates/pack, then upload excluded hidden
 `.release/`: zero artifacts were retained, smoke/publication were skipped, and
-no npm `0.3.1` release exists. The `0.3.2` candidate uses one nonhidden
-preparation/digest/upload directory, with the helper API unchanged. Its own
-review, gates, publication and registry verification remain required. See the
-[failed-upload receipt](RELEASING.md#failed-031-upload-and-032-candidate).
-Hosts must await verified `0.3.2` publication before adopting the new helper,
+no npm `0.3.1` release exists. `0.3.2` corrected artifact discovery and published
+the original prepared bytes. Its publisher retry reused the original artifact,
+but authenticated provenance names `https://github.com/actions/runner/undefined`.
+The `0.3.3` candidate preserves nonsecret runner metadata and requires
+`github-hosted` before isolated npm calls, with the helper API unchanged. Its
+own review, gates, signed identity, publication and strict registry verification
+remain pending. See the [release record](RELEASING.md#published-032-with-failed-strict-postflight).
+Hosts must await verified `0.3.3` publication before adopting the new helper,
 including an alias; existing Identity/Support `0.2.0` imports stay unchanged.
 
 The exact reviewed `0.0.0` package-name bootstrap remains published under
@@ -201,7 +205,7 @@ collection over an injected Store). The memory tier must remain importable
 without a Store — a host wanting only abuse-dampening should not construct
 storage. TypeScript, vitest, the ecosystem's standard layout.
 
-## `0.3.2` bounded-maintenance source candidate
+## `0.3.3` bounded-maintenance source candidate
 
 `sweepDurableWindowsPage` is a root/durable export over the existing
 `rate-limit-windows` collection. One call makes one physical global scan page,
@@ -232,8 +236,11 @@ retrying from the previous cursor can repeat work. The
 define the interface; current-head gates, review, exact publication, and host
 adoption remain release work.
 
-Host aliases for this helper must pin `0.3.2` only after its actual verified
-registry publication. A signed tag or GitHub release alone is not publication.
+Host aliases for this helper must await actual verified `0.3.3` registry
+publication. Published `0.3.2` did not pass strict postflight; a signed tag,
+GitHub release or successful publisher job alone is not adoption qualification.
+The [public postflight procedure](RELEASING.md#public-postflight-procedure)
+records the required independent checks and acceptance criteria.
 
 Upgrading existing durable data is deliberate: use versioned policy names or
 an isolated Store namespace, or coordinate a policy-store reset. Immutable

@@ -5,10 +5,12 @@ the hardened GitHub release workflow, npm trusted publishing, and provenance.
 The completed one-time manual `0.0.0` ceremony below exists as an audit record:
 npm could not configure a trusted publisher until `@pegma/rate-limit` existed.
 
-As of 2026-11-08, npm `latest` is `0.2.0` and historical `bootstrap` is `0.0.0`.
-Current source is the **unpublished `0.3.2` candidate**. The signed `0.3.0` and
-`0.3.1` GitHub releases below did not publish npm versions; neither is a host
-dependency or evidence of completed artifact/consumer verification.
+As of 2026-11-08, npm `latest` is `0.3.2` and historical `bootstrap` is `0.0.0`.
+`0.3.2` is published with exact original bytes and successful npm cryptographic
+checks, but its strict postflight **failed** the authenticated builder-identity
+policy. It is not qualified for the planned helper adoption. Current source is
+the **unpublished `0.3.3` candidate**. The signed `0.3.0` and `0.3.1` GitHub
+releases below did not publish npm versions.
 
 ## Release invariants
 
@@ -38,6 +40,261 @@ OIDC job checks the tag again, downloads the sealed artifact outside a source
 checkout, verifies the preparation manifest digest and both tarball digests,
 and invokes npm from a fresh directory with empty configuration files and an
 allowlisted environment. It never executes repository code.
+The `0.3.3` candidate preserves the nonsecret `RUNNER_ENVIRONMENT` value and
+requires `github-hosted` before invoking npm in that isolated environment.
+
+## Public postflight procedure
+
+Run this after publication, without publication authority. A successful
+`release:registry:check` establishes prepared-byte/registry identity only; it
+does **not** verify npm signatures, Sigstore provenance, authenticated claims or
+the public registry consumer. Every step below must pass before host adoption.
+This procedure is an acceptance requirement, not a claim that the `0.3.3`
+candidate has passed it.
+
+### Retain the original identity and compare bytes
+
+Use the original prepared artifact, not a fresh local pack or a recovery
+attempt's newly created artifact. Independently retain its Actions artifact ID,
+archive SHA-256, preparation-output manifest SHA-256, signed tag object/source
+commit, repository/owner IDs and original publishing run/attempt. Bind them to
+the exact reviewed release workflow and actual successful preparation/smoke
+jobs. Inspect the artifact inventory: exactly `package-manifest.json` and its
+named tarball, both regular files. Compare the archive and manifest digests
+with those independently retained values before trusting their contents.
+
+In a POSIX shell, set `ORIGINAL_ZIP` to the retained archive, `PREPARED` to its
+verified extraction, `RELEASE_SOURCE` to its reviewed tooling checkout, and
+`NODE` and `NPM_CLI` to absolute paths for Node 24 and the reviewed, unpacked
+npm `11.18.0` CLI. Authenticate the npm
+tool's archive and extracted tree before use; the reviewed npm archive SHA-256
+is `73f6155215ebabf4ed96dca1f567c2372cc713c33af2e5b9b62fde4e92373e2e`.
+Set `VERSION` to the stable version in the verified manifest, not `latest`.
+Use OpenSSL for the digest/certificate inspection commands below.
+
+```sh
+set -eu
+PROOF=$(mktemp -d)
+openssl dgst -sha256 "$ORIGINAL_ZIP"
+openssl dgst -sha256 "$PREPARED/package-manifest.json"
+openssl dgst -sha256 "$PREPARED/pegma-rate-limit-$VERSION.tgz"
+openssl dgst -sha512 "$PREPARED/pegma-rate-limit-$VERSION.tgz"
+openssl dgst -sha1 "$PREPARED/pegma-rate-limit-$VERSION.tgz"
+cd "$RELEASE_SOURCE"
+pnpm run release:registry:check -- --manifest "$PREPARED/package-manifest.json" \
+  > "$PROOF/registry-check.stdout" 2> "$PROOF/registry-check.stderr"
+```
+
+Require the tool to report `exact`, with manifest/source/tag/version and both
+tarball digests matching the retained original. A missing registry version is
+not postflight success. Save its output. Also obtain fresh public version
+metadata and the actual tarball, then compare the latter byte for byte:
+
+```sh
+curl --disable --noproxy '*' --fail --silent --show-error --location --proto '=https' \
+  "https://registry.npmjs.org/@pegma%2Frate-limit/$VERSION" \
+  --output "$PROOF/registry-version.json"
+curl --disable --noproxy '*' --fail --silent --show-error --location --proto '=https' \
+  "https://registry.npmjs.org/@pegma/rate-limit/-/rate-limit-$VERSION.tgz" \
+  --output "$PROOF/registry.tgz"
+cmp "$PREPARED/pegma-rate-limit-$VERSION.tgz" "$PROOF/registry.tgz"
+```
+
+Require the metadata's exact name/version, exports and dependency pins to match
+the prepared package. `dist.tarball` must be that canonical public-registry
+URL; `dist.integrity` and `dist.shasum` must match the original SHA-512 SRI and
+SHA-1. Signature and provenance metadata must be present. Save fresh independent
+GitHub repository/owner IDs and the original release/job records separately;
+values copied from the provenance itself cannot establish expected identity.
+
+### Verify an isolated public-registry installation
+
+Use a new directory outside every workspace, a new cache, empty user/global npm
+configurations and an allowlisted child environment. This POSIX example passes
+no npm/GitHub tokens, OIDC variables, proxy configuration, `NODE_OPTIONS` or
+workspace dependency paths. Do not add credentials to make verification pass.
+
+```sh
+mkdir "$PROOF/consumer" "$PROOF/home" "$PROOF/tmp"
+: > "$PROOF/user.npmrc"
+: > "$PROOF/global.npmrc"
+clean() {
+  env -i PATH="$(dirname "$NODE"):/usr/bin:/bin" \
+    HOME="$PROOF/home" TMPDIR="$PROOF/tmp" CI=true \
+    npm_config_userconfig="$PROOF/user.npmrc" \
+    npm_config_globalconfig="$PROOF/global.npmrc" \
+    npm_config_cache="$PROOF/npm-cache" \
+    npm_config_registry=https://registry.npmjs.org/ \
+    npm_config_ignore_scripts=true npm_config_audit=false npm_config_fund=false \
+    "$@"
+}
+cd "$PROOF/consumer"
+clean "$NODE" --version
+clean "$NODE" "$NPM_CLI" --version
+printf '{"name":"rate-limit-registry-proof","private":true,"type":"module","dependencies":{"@pegma/rate-limit":"%s"}}\n' \
+  "$VERSION" > package.json
+clean "$NODE" "$NPM_CLI" install --ignore-scripts --no-audit --no-fund \
+  --registry https://registry.npmjs.org/ > "$PROOF/install.stdout" 2> "$PROOF/install.stderr"
+clean "$NODE" "$NPM_CLI" audit signatures --json --include-attestations \
+  --registry https://registry.npmjs.org/ > "$PROOF/signatures.json" 2> "$PROOF/signatures.stderr"
+```
+
+Stop on any nonzero exit; check each command rather than masking failure with a
+pipeline or continuing to imports. Require Node 24 and npm exactly `11.18.0`.
+Inspect `package-lock.json`: `packages["node_modules/@pegma/rate-limit"]` must
+have the exact version, original integrity, canonical public tarball URL,
+unchanged exact dependencies, and no workspace/file link. Retain the lockfile.
+
+The actual audit must have empty `invalid` and `missing` arrays and exactly one
+matching target in `verified`, including location
+`node_modules/@pegma/rate-limit` and registry `https://registry.npmjs.org/`.
+Require exactly one target `attestationBundles` entry whose `predicateType` is
+`https://slsa.dev/provenance/v1`. Do not select the first bundle: it may be the
+separate npm publish attestation. Only **after** that successful cryptographic
+audit may the authenticated SLSA bundle be decoded for policy inspection.
+
+### Inspect authenticated certificate and provenance policy
+
+The commands below select and save that verified target bundle, emit its
+certificate and decode its statement for the subsequent manual checks. They
+do not perform cryptographic verification themselves:
+
+```sh
+clean "$NODE" --input-type=module - "$PROOF/signatures.json" "$PROOF" "$VERSION" <<'NODE'
+import assert from "node:assert/strict";
+import { X509Certificate } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+const [auditFile, directory, version] = process.argv.slice(2);
+const audit = JSON.parse(readFileSync(auditFile, "utf8"));
+assert.deepEqual(audit.invalid, []);
+assert.deepEqual(audit.missing, []);
+const targets = audit.verified.filter((entry) =>
+  entry.name === "@pegma/rate-limit" && entry.version === version &&
+  entry.location === "node_modules/@pegma/rate-limit" &&
+  entry.registry === "https://registry.npmjs.org/");
+assert.equal(targets.length, 1);
+const proofs = targets[0].attestationBundles.filter((entry) =>
+  entry.predicateType === "https://slsa.dev/provenance/v1");
+assert.equal(proofs.length, 1);
+const bundle = proofs[0].bundle;
+const material = bundle.verificationMaterial;
+const encoded = material.certificate?.rawBytes ??
+  material.x509CertificateChain?.certificates[0]?.rawBytes;
+assert.ok(typeof encoded === "string" && encoded.length <= 65536);
+const certificate = new X509Certificate(Buffer.from(encoded, "base64"));
+assert.equal(certificate.subjectAltName,
+  `URI:https://github.com/pegma-dev/rate-limit/.github/workflows/publish.yml@refs/tags/v${version}`);
+const envelope = bundle.dsseEnvelope;
+assert.equal(envelope.payloadType, "application/vnd.in-toto+json");
+assert.ok(typeof envelope.payload === "string" && envelope.payload.length <= 1048576);
+const statement = JSON.parse(Buffer.from(envelope.payload, "base64").toString("utf8"));
+writeFileSync(join(directory, "selected-slsa-bundle.json"), JSON.stringify(bundle, null, 2));
+writeFileSync(join(directory, "authenticated-certificate.pem"), certificate.toString());
+writeFileSync(join(directory, "authenticated-provenance.json"), JSON.stringify(statement, null, 2));
+NODE
+openssl x509 -in "$PROOF/authenticated-certificate.pem" -noout -text \
+  > "$PROOF/certificate-policy-review.txt"
+```
+
+The selected leaf certificate is
+`verificationMaterial.certificate.rawBytes`, or the first certificate's
+`rawBytes` in `verificationMaterial.x509CertificateChain.certificates`; it is
+base64 DER. Inspect the saved certificate output and decoded provenance against
+every requirement below, retaining the complete audit alongside them. Decoding
+or displaying a certificate is not signature or Sigstore verification.
+
+Require **every** policy check below; record each result against the original
+sealed artifact and independent GitHub observations:
+
+| Authenticated field                                              | Required value                                                                                                                                           |
+| ---------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Certificate URI SAN                                              | Exactly `https://github.com/pegma-dev/rate-limit/.github/workflows/publish.yml@refs/tags/v<VERSION>`; no extra SAN identity.                             |
+| Certificate Fulcio OIDC issuer extension `1.3.6.1.4.1.57264.1.1` | Exactly `https://token.actions.githubusercontent.com`. This is the extension value, not the certificate issuer DN.                                       |
+| Statement `_type` and `predicateType`                            | `https://in-toto.io/Statement/v1` and `https://slsa.dev/provenance/v1`.                                                                                  |
+| `subject`                                                        | Exactly one: name `pkg:npm/%40pegma/rate-limit@<VERSION>`, with `digest.sha512` equal to the hexadecimal SHA-512 of the **original prepared tarball**.   |
+| `predicate.buildDefinition.buildType`                            | `https://slsa-framework.github.io/github-actions-buildtypes/workflow/v1`.                                                                                |
+| `buildDefinition.externalParameters.workflow`                    | Exact object: repository `https://github.com/pegma-dev/rate-limit`, path `.github/workflows/publish.yml`, ref `refs/tags/v<VERSION>`.                    |
+| `buildDefinition.internalParameters.github`                      | `event_name` is `release`; `repository_id` and `repository_owner_id` match the independently retained GitHub IDs.                                        |
+| `buildDefinition.resolvedDependencies`                           | Exactly one: URI `git+https://github.com/pegma-dev/rate-limit@refs/tags/v<VERSION>`, with `digest.gitCommit` equal to the original signed source commit. |
+| `predicate.runDetails.builder.id`                                | Exactly `https://github.com/actions/runner/github-hosted`. `/undefined` is a failure.                                                                    |
+| `runDetails.metadata.invocationId`                               | Exactly `https://github.com/pegma-dev/rate-limit/actions/runs/<ORIGINAL_PUBLISH_RUN>/attempts/<ORIGINAL_PUBLISH_ATTEMPT>`.                               |
+
+Here `buildDefinition` and `runDetails` are under `predicate`. An idempotent
+skip-only retry can leave genuine attempt-1 provenance after attempt 2 succeeds;
+compare the original physical publication, not merely the most recent attempt.
+Confirm the signed tag/source, successful current-head review/CI and actual
+release jobs separately. The protected `npm-publish` environment and normal
+owner approval are established by the immutable workflow and actual job record;
+do not invent an attested SLSA environment field.
+
+### Exercise the public exports and retain a result
+
+Only after byte, cryptographic and authenticated-policy checks pass, save this
+consumer as `$PROOF/consumer/consumer.mjs` and run it in that directory. It uses
+the public root/memory/durable exports and the actual Storage Core memory
+adapter, following the release smoke imports and synthetic limiter checks:
+
+```js
+import assert from "node:assert/strict";
+import * as root from "@pegma/rate-limit";
+import * as memory from "@pegma/rate-limit/memory";
+import * as durable from "@pegma/rate-limit/durable";
+import { createMemoryStore } from "@pegma/storage-core";
+
+assert.equal(root.createMemoryLimiter, memory.createMemoryLimiter);
+assert.equal(root.sweepDurableWindowsPage, durable.sweepDurableWindowsPage);
+let time = "2026-11-08T00:00:00.000Z";
+const clock = { now: () => time };
+const policy = root.defineRateLimitPolicy({
+  name: "release-proof:" + process.argv[2],
+  limit: 1,
+  windowMs: 1000,
+});
+const dampener = root.createMemoryLimiter(policy, { clock });
+assert.equal((await dampener.allow("opaque")).allowed, true);
+assert.equal((await dampener.allow("opaque")).allowed, false);
+const store = createMemoryStore();
+const limiter = root.createDurableLimiter(policy, store, {
+  clock,
+  maxClockSkewMs: 0,
+});
+assert.equal((await limiter.allow("opaque")).allowed, true);
+assert.equal((await limiter.allow("opaque")).allowed, false);
+time = "2026-11-08T00:00:02.000Z";
+const page = await root.sweepDurableWindowsPage(store, {
+  limit: 10,
+  clock,
+  maxClockSkewMs: 0,
+});
+assert.deepEqual(page, { scanned: 2, deleted: 1, nextCursor: null });
+assert.equal((await limiter.allow("opaque")).allowed, true);
+console.log(
+  JSON.stringify({
+    version: process.argv[2],
+    publicRootsImported: 3,
+    memoryBoundary: true,
+    syntheticMemoryStore: true,
+    pagedSweep: page,
+  }),
+);
+```
+
+```sh
+clean "$NODE" consumer.mjs "$VERSION" > "$PROOF/consumer-result.json" 2> "$PROOF/consumer.stderr"
+```
+
+Require exit zero and those assertions, then recheck fresh registry metadata
+and downloaded bytes against the original. This synthetic memory-backed
+consumer is not production durability, a host deployment or client acceptance.
+Retain the original ZIP/manifest/tarball and independent digests/Actions IDs,
+registry metadata/bytes, Node/npm versions, install output/lockfile, actual
+audit, selected bundle/certificate/decoded claims, policy checklist, consumer
+output and a dated result receipt. The receipt must bind those inputs and mark
+PASS only when **all** release, crypto, policy and consumer checks pass.
+On any failure, retain the evidence and mark FAIL/hold; do not publish a host
+alias, waive the builder policy, repack, retag or treat decoding as proof.
+In particular this procedure does not qualify the existing `0.3.2` release.
 
 <a id="failed-030-preparation-and-031-candidate"></a>
 
@@ -65,7 +322,9 @@ or treat the failed preparation as publication. The correction used reviewed
 added explicit trust to the packing checkout without changing limiter/helper
 behavior. Its later failure was a separate upload boundary, recorded next.
 
-## Failed `0.3.1` upload and `0.3.2` candidate
+<a id="failed-031-upload-and-032-candidate"></a>
+
+## Failed `0.3.1` upload
 
 The signed annotated
 [`v0.3.1` release](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.1),
@@ -89,10 +348,10 @@ Preserve the signed `v0.3.1` tag, source and failed-run record alongside the
 earlier `v0.3.0` history. Do not replace a tag, reuse either version for changed
 source, or treat a GitHub release as npm availability.
 
-The new `0.3.2` candidate keeps the limiter/helper API and signing correction
-unchanged. Its producer uses explicit `--output` at the nonhidden
-`${RUNNER_TEMP}/rate-limit-prepared` directory, computes the manifest digest
-there, and uploads that same directory through `${{ runner.temp }}`. Hidden-file
+`0.3.2` kept the limiter/helper API and signing correction unchanged. Its
+producer used explicit `--output` at the nonhidden
+`${RUNNER_TEMP}/rate-limit-prepared` directory, computed the manifest digest
+there, and uploaded that same directory through `${{ runner.temp }}`. Hidden-file
 exclusion remains enabled (`include-hidden-files: false`); recovery does not
 broaden artifact collection.
 Validate the actual YAML producer/digest/upload wiring and file discovery with
@@ -104,16 +363,62 @@ Its [search implementation](https://github.com/actions/upload-artifact/blob/330a
 defines the glob options and directory filtering used by the
 [regression](../scripts/release-artifact-discovery.test.mjs). The test exercises
 that public glob API and filtering only; it does not execute the vendored action
-bundle or upload bytes. Current-head review, full Node 22/24
-gates, the new signed release identity, retained exact artifact, isolated smoke,
-publication and registry verification remain required for this candidate.
+bundle or upload bytes. The resulting `0.3.2` publication had the separate
+provenance-policy failure recorded next.
 
-Only after `0.3.2` actually publishes and its original prepared bytes and
-registry release are verified may a host pin it, including through an npm
-alias. This does not migrate legacy `0.2.0` counters or change existing host
-deployment state; existing Identity/Support `0.2.0` imports remain unchanged.
-No repeated bootstrap, token fallback or signature bypass is
-part of this recovery.
+## Published `0.3.2` with failed strict postflight
+
+The [`v0.3.2` release](https://github.com/pegma-dev/rate-limit/releases/tag/v0.3.2)
+binds signed source
+[`a50469dce0c123865ef3540819060509a936ec38`](https://github.com/pegma-dev/rate-limit/commit/a50469dce0c123865ef3540819060509a936ec38).
+[Run `42515823225`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225)
+attempt 1 executed
+[preparation `128838497494`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128838497494)
+and [isolated smoke `128838619041`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128838619041).
+Original artifact `13631327333` contains the sealed manifest and tarball; its
+tarball SHA-256 is
+`1bc74d4a7f5ca239bbee80097a815bbe3ae04f45eb60cc40bd53499139422802`.
+The [first publisher](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128838677268)
+published but failed waiting for registry visibility. The
+[attempt-2 publisher `128841340300`](https://github.com/pegma-dev/rate-limit/actions/runs/42515823225/job/128841340300)
+later completed idempotently using that **same original artifact**. Preparation
+and smoke were not executed again; carried-forward attempt-2 job aliases are
+not fresh pack or consumer proof.
+
+Registry metadata and downloaded `0.3.2` tarball bytes match the original
+artifact. Actual npm `11.18.0` ECDSA signature and Sigstore verification passed.
+The authenticated SLSA provenance also matches the repository, source commit,
+release tag and original attempt-1 invocation. Its builder URI, however, is
+`https://github.com/actions/runner/undefined`, rather than the required
+`https://github.com/actions/runner/github-hosted`. Strict postflight therefore
+remains **FAILED**, despite publication and a successful workflow retry.
+Cryptographic validity does not waive the authenticated-claims policy.
+Checks downstream of that failure, including strict postflight's consumer
+execution, did not complete; the earlier preparation smoke remains separate.
+
+The immutable
+[`0.3.2` publisher environment filter](https://github.com/pegma-dev/rate-limit/blob/a50469dce0c123865ef3540819060509a936ec38/.github/workflows/publish.yml#L396)
+did not preserve `RUNNER_ENVIRONMENT` for npm. The reviewed
+[`npm@11.18.0` provenance generator](https://github.com/npm/cli/blob/v11.18.0/workspaces/libnpmpublish/lib/provenance.js#L58)
+uses that value to construct the builder URI. These source facts explain the
+observed missing runner metadata; they do not turn the failed proof into a pass.
+They do not establish that the actual runner was self-hosted or untrusted.
+
+## `0.3.3` provenance-metadata candidate
+
+Current source preserves the nonsecret `RUNNER_ENVIRONMENT` value in the
+isolated npm environment and refuses to invoke that publisher's npm commands
+unless it is `github-hosted`. The limiter and maintenance-helper API are
+unchanged. Its own review, current-head Node 22/24 gates, new protected signed
+release identity, retained exact artifact, isolated smoke, publication and
+strict postflight remain pending.
+
+Hosts must await verified `0.3.3` publication before pinning the new helper,
+including through an alias. Existing Identity/Support `0.2.0` imports and
+counters remain unchanged until an explicit host transition. Preserve all
+`0.3.0`, `0.3.1` and `0.3.2` tags, releases, artifacts and failure receipts.
+Do not weaken the builder policy, move a tag, unpublish/reuse a version, repeat
+bootstrap or add a token fallback to recover.
 
 ## One-time `0.0.0` package-name bootstrap
 
@@ -126,7 +431,8 @@ During bootstrap npm also assigned the default `latest` tag to `0.0.0`. The oper
 to remove it, but npm rejected the request with HTTP 400. The immutable
 bootstrap remains exact and the `bootstrap` tag remains correct. The later
 normal `0.1.0` publication moved `latest` to the first advertised version;
-`latest` has since advanced to `0.2.0`.
+`latest` has since advanced to published `0.3.2`, whose strict-postflight
+limitation is recorded above.
 
 The steps below are retained only as the ceremony's audit and recovery record.
 
@@ -295,5 +601,6 @@ npm dist-tag ls @pegma/rate-limit
 
 For that ceremony the registry check had to report
 `@pegma/rate-limit@0.1.0: exact`, with `latest` at `0.1.0` and `bootstrap` at
-`0.0.0`. Current `latest` is `0.2.0`; do not retag an older release or repeat
-the bootstrap to prepare the unpublished `0.3.2` candidate.
+`0.0.0`. Current `latest` is published `0.3.2`, with the strict-postflight
+limitation above; do not retag an older release or repeat the bootstrap to
+prepare the unpublished `0.3.3` candidate.

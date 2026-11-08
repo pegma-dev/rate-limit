@@ -7,27 +7,33 @@ in-memory tier and a durable storage-backed tier for expensive operations.
 
 > [!IMPORTANT]
 > Rate Limit is in early `0.x` development. Its public API is not stable.
-> Current source is the **`0.3.2` candidate, not published**. Registry `latest`
-> remains `0.2.0`, which
-> predates the merged [PR #8 hardening](https://github.com/pegma-dev/rate-limit/pull/8)
-> and the new bounded maintenance helper. The first advertised `0.1.0`
+> Current source is the **unpublished `0.3.3` candidate**. Registry `latest`
+> is `0.3.2`: original bytes match and npm cryptographic checks passed, but strict
+> postflight failed its authenticated builder-identity policy. It is not
+> qualified for the planned helper adoption. The first advertised `0.1.0`
 > release was published from protected signed `v0.1.0` through
 > trusted-publisher OIDC with provenance; the historical `0.0.0` name bootstrap
 > remains separate under `bootstrap`. pegma.dev composes the durable tier in
 > its production Identity worker; this candidate is not a new host deployment.
 
-The source behavior below describes the `0.3.2` candidate. Adoption waits for
-its reviewed publication and the host's explicit configuration/storage transition.
+The source behavior below describes `0.3.3`, with the limiter/helper API
+unchanged from `0.3.2`. Adoption waits for the new candidate's verified release
+and the host's explicit configuration/storage transition. The
+[public postflight procedure](docs/RELEASING.md#public-postflight-procedure)
+defines the required byte, cryptographic, provenance-policy and consumer checks.
 
 The signed `v0.3.0` tag and GitHub release are retained history: their
 preparation failed before packing, produced no release artifact, and did not
 publish npm bytes. `0.3.1` fixed that trust configuration and passed packing,
 but upload discovered no files beneath hidden `.release/`; no artifact was
 retained and smoke/publication were skipped. Neither version is on npm.
-The `0.3.2` candidate uses one nonhidden preparation/digest/upload directory,
-with the limiter/helper API unchanged. See the
-[failed upload and new candidate record](docs/RELEASING.md#failed-031-upload-and-032-candidate).
-Hosts must wait for actual verified `0.3.2` publication before pinning the new
+`0.3.2` corrected artifact discovery and published the original prepared bytes;
+an idempotent publisher retry reused that artifact. Its authenticated provenance
+contains `https://github.com/actions/runner/undefined`, so successful workflow
+completion did not satisfy strict postflight. The `0.3.3` candidate preserves
+the nonsecret runner metadata and requires `github-hosted` before isolated npm
+calls. See the [release record](docs/RELEASING.md#published-032-with-failed-strict-postflight).
+Hosts must wait for actual verified `0.3.3` publication before pinning the new
 helper, including through an alias. Existing Identity/Support `0.2.0` imports
 remain unchanged; no legacy data transition is automatic.
 

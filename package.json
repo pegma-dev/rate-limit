@@ -22,7 +22,7 @@
     "release:pack": "node scripts/release-package.mjs pack",
     "release:publish": "node scripts/release-package.mjs publish",
     "release:registry:check": "node scripts/release-package.mjs registry-check",
-    "test": "pnpm run build && vitest run && node --test scripts/configure-release-signing.test.mjs scripts/release-workflow-signing.test.mjs scripts/release-artifact-discovery.test.mjs"
+    "test": "pnpm run build && vitest run && node --test scripts/configure-release-signing.test.mjs scripts/release-workflow-signing.test.mjs scripts/release-artifact-discovery.test.mjs scripts/release-workflow-environment.test.mjs"
   },
   "devDependencies": {
     "@actions/glob": "0.5.0",

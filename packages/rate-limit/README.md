@@ -9,27 +9,33 @@ Two explicitly named application rate-limit tiers:
   abuse-critical operations.
 
 > [!IMPORTANT]
-> Current source is the **`0.3.2` candidate, not published**. Registry `latest`
-> remains `0.2.0`, which
-> predates the merged descriptor/configuration hardening and the bounded
-> global sweep described here. `0.1.0` was the first advertised release, published through
-> trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
+> Current source is the **unpublished `0.3.3` candidate**. Registry `latest`
+> is `0.3.2`: original-byte and npm cryptographic checks passed, but strict
+> postflight failed the authenticated builder-identity policy. It is not
+> qualified for the planned helper adoption. `0.1.0` was the first advertised
+> release, published through trusted-publisher OIDC with provenance. The exact reviewed `0.0.0`
 > package-name bootstrap remains isolated under the `bootstrap` dist-tag and
 > is never advertised as the current supported release.
 
-The API and storage behavior below describe candidate source. Use an exact
-published version only after its release verification and an explicit host
-storage/configuration transition.
+The API and storage behavior below describe `0.3.3` candidate source; the
+limiter/helper API is unchanged from `0.3.2`. Use an exact published version
+only after its release verification and an explicit host storage/configuration
+transition. Follow the
+[public postflight procedure](https://github.com/pegma-dev/rate-limit/blob/main/docs/RELEASING.md#public-postflight-procedure);
+an exact-byte registry check alone is insufficient.
 
 The signed `v0.3.0` tag and GitHub release exist, but preparation failed before
 packing: no release artifact or npm `0.3.0` bytes were published. Signed
 `v0.3.1` fixed checkout trust and passed its gates and pack, but upload excluded
 hidden `.release/`, retained zero artifacts, and skipped smoke/publication.
-There is no npm `0.3.1` release. The `0.3.2` candidate moves preparation,
-digesting and upload to the same nonhidden directory without changing the
-limiter/helper API. The immutable failure history and new candidate are recorded in
+There is no npm `0.3.1` release. `0.3.2` corrected artifact discovery and published
+the original prepared bytes, but its authenticated provenance names
+`https://github.com/actions/runner/undefined`; strict postflight failed despite
+successful npm cryptographic checks and an idempotent publisher retry. The
+`0.3.3` candidate preserves nonsecret runner metadata and requires
+`github-hosted` before isolated npm calls. The immutable history is recorded in
 [release operations](https://github.com/pegma-dev/rate-limit/blob/main/docs/RELEASING.md).
-No host should pin a new helper alias until actual `0.3.2` publication and
+No host should pin a new helper alias until actual `0.3.3` publication and
 exact-artifact verification. Existing Identity/Support `0.2.0` composition and
 legacy counter storage remain separate from that adoption.
 
@@ -136,7 +142,8 @@ row. Checks against that malformed row still fail closed.
 
 ## Bounded global cleanup
 
-The candidate adds this interface at the root and durable subpath, defined in
+The global helper exposes this interface at the root and durable subpath, defined
+in
 [the actual source](https://github.com/pegma-dev/rate-limit/blob/main/packages/rate-limit/src/durable.ts):
 
 ```ts
@@ -212,9 +219,9 @@ delete arbitrary malformed rows, or mistake the global sweep for a migration
 of previously published `0.2.0` data.
 
 A host adopting the new helper through an npm alias must wait for actual
-`0.3.2` publication and registry verification before pinning that alias. Existing
-`0.2.0` consumers and counters need their own deliberate migration; the new
-release does not convert them automatically.
+`0.3.3` publication and strict registry verification before pinning that alias.
+Existing `0.2.0` consumers and counters need their own deliberate migration;
+the new release does not convert them automatically.
 
 ## License
 
